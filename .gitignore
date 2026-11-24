@@ -12,3 +12,7 @@ packaging/arch/libfprint/
 firmware/*.bin
 benchmark/
 external_engines/
+local/
+*.egg-info/
+toolkit/dist/
+toolkit/build/

@@ -6,12 +6,21 @@ pkgver=1.94.100.r9
 pkgrel=1
 pkgdesc='libfprint with FTE3600 SPI fingerprint support and DKMS resource module'
 arch=(x86_64)
-url='https://github.com/SamSeven777/libfprint-fte3600'
+url='https://github.com/wings1848/libfprint-fte3600'
 license=(LGPL-2.1-or-later GPL-2.0-only MIT)
 groups=(fprint)
-depends=(libgcc glib2 glibc libgudev libgusb openssl pixman dkms python)
-makedepends=(cairo git glib2-devel gobject-introspection meson ninja python)
-checkdepends=(umockdev)
+depends=(libgcc glib2 glibc libgudev libgusb openssl pixman dkms python python-gobject)
+optdepends=(
+  'fprintd: enrollment and authentication service'
+  'linux-headers: build the module for the standard Arch kernel'
+  'linux-lts-headers: build the module for the LTS kernel'
+  'gtk4: desktop GUI (fte3600-toolkit-gui)'
+  'libadwaita: desktop GUI (fte3600-toolkit-gui)'
+  'libnotify: desktop notifications during enrollment/verification'
+  'libpulse: audio cues via paplay'
+)
+makedepends=(cairo git glib2-devel gobject-introspection meson ninja python python-build python-installer python-setuptools)
+checkdepends=(umockdev dbus)
 provides=("libfprint=$pkgver" 'libfprint-2.so=2-64')
 conflicts=(libfprint)
 install=fte3600.install
@@ -19,11 +28,8 @@ install=fte3600.install
 # Do not inject a second -flto through makepkg's global compiler flags.
 options=(!lto)
 
-source=("libfprint::git+https://github.com/SamSeven777/libfprint-fte3600.git#branch=main")
+source=("libfprint::git+https://github.com/wings1848/libfprint-fte3600.git#branch=main")
 sha256sums=(SKIP)
-optdepends=('fprintd: enrollment and authentication service'
-            'linux-headers: build the module for the standard Arch kernel'
-            'linux-lts-headers: build the module for the LTS kernel')
 
 # Upstream libfprint development snapshot from which the FTE3600 work starts.
 _fte_upstream_base=c4654fdc85c25afdd9115bec2f95a44145ae3b94
@@ -55,6 +61,8 @@ build() {
 
   meson setup "$srcdir/build" "$srcdir/libfprint" "${meson_args[@]}"
   meson compile -C "$srcdir/build"
+
+  python -m build --wheel --no-isolation "$srcdir/libfprint/toolkit"
 }
 
 check() {
@@ -63,10 +71,16 @@ check() {
     fte3600-install-firmware fte3600-setup fte3600-pair \
     fte3600-linux-board fte3600-linux-runtime fte3600-device-session \
     fte3600-fw9369-release fte3600-fw9369-runtime fte3600-probe fte3600-open-bench
+
+  python -W error::ResourceWarning -m unittest discover \
+    -s "$srcdir/libfprint/toolkit/tests" -p 'test_core_unit.py' -v
+  dbus-run-session -- python -W error::ResourceWarning -m unittest \
+    "$srcdir/libfprint/toolkit/tests/test_dbus_e2e.py" -v
 }
 
 package() {
   DESTDIR="$pkgdir" meson install -C "$srcdir/build"
+  python -m installer --destdir="$pkgdir" "$srcdir/libfprint/toolkit/dist/"*.whl
 
   install -Dm644 "$srcdir/libfprint/kernel/fte3600/dkms.conf" "$pkgdir/usr/src/fte3600-0.2/dkms.conf"
   for file in fte3600.c fte3600-policy.h fte3600-policy-test.c Makefile; do

@@ -101,7 +101,7 @@ devices, suspend/resume results and pending fixes.
 
 ## Troubleshooting and removal
 
-Run `./scripts/fte3600-tool.sh check`, collect a `probe` report, and inspect
+Run `./scripts/fte3600-tool.sh check` (or unprivileged `fte3600-toolkit doctor`), collect a `probe` report, and inspect
 `journalctl -u fprintd -b`. These cover device pairing, permissions, firmware
 and startup errors. Include the tested commit in a hardware report.
 

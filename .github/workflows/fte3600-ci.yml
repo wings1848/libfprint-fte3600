@@ -16,11 +16,16 @@ jobs:
       - name: Install dependencies
         run: >-
           dnf install -y git gcc gcc-c++ make meson ninja-build python3
+          python3-gobject dbus-daemon
           pkgconf-pkg-config glib2-devel libgusb-devel libgudev-devel
           systemd systemd-devel cairo-devel umockdev umockdev-devel
       - uses: actions/checkout@v6
       - name: Check production and separate synthetic API builds
         run: ./scripts/check-fte3600.sh
+      - name: Run toolkit unit and protocol-level D-Bus E2E tests
+        run: |
+          python3 -W error::ResourceWarning -m unittest discover -s toolkit/tests -p 'test_core_unit.py' -v
+          dbus-run-session -- python3 -W error::ResourceWarning -m unittest toolkit/tests/test_dbus_e2e.py -v
 
   ubuntu:
     name: Ubuntu 26.04 native build and software tests
@@ -34,6 +39,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential ca-certificates git meson ninja-build pkg-config python3 \
+            python3-gi dbus \
             libglib2.0-dev libgusb-dev libgudev-1.0-dev \
             libudev-dev systemd systemd-dev libcairo2-dev \
             umockdev libumockdev-dev linux-headers-generic
@@ -45,3 +51,7 @@ jobs:
           make -C kernel/fte3600 KDIR="$kernel_headers" W=1
       - name: Check production and separate synthetic API builds
         run: ./scripts/check-fte3600.sh
+      - name: Run toolkit unit and protocol-level D-Bus E2E tests
+        run: |
+          python3 -W error::ResourceWarning -m unittest discover -s toolkit/tests -p 'test_core_unit.py' -v
+          dbus-run-session -- python3 -W error::ResourceWarning -m unittest toolkit/tests/test_dbus_e2e.py -v
