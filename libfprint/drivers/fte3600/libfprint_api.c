@@ -918,6 +918,165 @@ test_strip_retries (void)
   g_assert_no_error (error);
 }
 
+static gboolean
+cancel_only (gpointer data)
+{
+  g_cancellable_cancel (data);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+test_recoverable_session_and_retry (void)
+{
+  g_autoptr(GError) error = NULL;
+  g_autoptr(FpContext) context = fp_context_new ();
+  FpDevice *device = only_device (context);
+
+  /* Unsupported silicon reported via FTE3600_RUNTIME_SESSION must fail fast
+   * with NOT_SUPPORTED and must NOT sleep or retry open. */
+  reset_trace ();
+  mode ("open-unsupported-session");
+  g_assert_false (fp_device_open_sync (device, NULL, &error));
+  g_assert_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_NOT_SUPPORTED);
+  g_clear_error (&error);
+  g_assert_cmpuint (trace_count ("open"), ==, 1);
+
+  /* Cold-open calibration failure retries once and succeeds when cleared. */
+  reset_trace ();
+  mode ("open-calib-once");
+  g_assert_true (fp_device_open_sync (device, NULL, &error));
+  g_assert_no_error (error);
+  g_assert_cmpuint (trace_count ("open"), ==, 2);
+
+  g_autoptr(FpPrint) enrolled = enroll (device, "enroll");
+
+  /* Permanent unsupported session error during verify must NOT turn into retry. */
+  reset_trace ();
+  mode ("capture-unsupported-session");
+  gboolean matched = TRUE;
+  g_assert_false (fp_device_verify_sync (device, enrolled, NULL, NULL, NULL,
+                                         &matched, NULL, &error));
+  g_assert_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_NOT_SUPPORTED);
+  g_clear_error (&error);
+  g_assert_cmpuint (trace_count ("close"), ==, 1);
+
+  /* Recoverable session loss during verify returns RETRY_GENERAL up to 2 times,
+   * retiring the stale runtime each time, then surfaces a hard error on the 3rd. */
+  mode ("positive");
+  g_assert_true (fp_device_verify_sync (device, enrolled, NULL, NULL, NULL,
+                                        &matched, NULL, &error));
+  g_assert_no_error (error);
+  g_assert_true (matched);
+
+  for (guint i = 0; i < 2; i++)
+    {
+      reset_trace ();
+      mode ("capture-session-loss");
+      g_assert_false (fp_device_verify_sync (device, enrolled, NULL, NULL, NULL,
+                                             &matched, NULL, &error));
+      g_assert_error (error, FP_DEVICE_RETRY, FP_DEVICE_RETRY_GENERAL);
+      g_clear_error (&error);
+      g_assert_cmpuint (trace_count ("close"), ==, 1);
+      /* Reopen cleanly before next loss check. */
+      mode ("positive");
+      if (i == 0)
+        {
+          /* Keep consecutive counter running by failing again on next verify. */
+          mode ("capture-session-loss");
+        }
+    }
+  /* Third consecutive recoverable loss must become a hard device error. */
+  mode ("capture-session-loss");
+  g_assert_false (fp_device_verify_sync (device, enrolled, NULL, NULL, NULL,
+                                         &matched, NULL, &error));
+  g_assert_error (error, FP_DEVICE_ERROR, FP_DEVICE_ERROR_GENERAL);
+  g_clear_error (&error);
+
+  g_assert_true (fp_device_close_sync (device, NULL, &error));
+  g_assert_no_error (error);
+
+  /* Cancelling during the cold-open calibration retry backoff must abort
+   * promptly rather than blocking for the full 1 second sleep. */
+  {
+    g_autoptr(GCancellable) cancel = g_cancellable_new ();
+    reset_trace ();
+    mode ("open-calib-fail");
+    g_timeout_add (60, cancel_only, cancel);
+    gint64 started = g_get_monotonic_time ();
+    g_assert_false (fp_device_open_sync (device, cancel, &error));
+    gint64 elapsed_ms = (g_get_monotonic_time () - started) / 1000;
+    g_assert_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+    g_clear_error (&error);
+    g_assert_cmpint (elapsed_ms, <, 400);
+    g_assert_cmpuint (trace_count ("open"), ==, 1);
+  }
+}
+
+typedef struct
+{
+  FpDevice *device;
+  gboolean  suspended_ok;
+  gboolean  resumed_ok;
+} SuspendVerifyCtx;
+
+static gboolean
+do_resume_verify (gpointer data)
+{
+  SuspendVerifyCtx *ctx = data;
+  g_autoptr(GError) error = NULL;
+
+  mode ("positive");
+  ctx->resumed_ok = fp_device_resume_sync (ctx->device, NULL, &error);
+  g_assert_no_error (error);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean
+do_suspend_verify (gpointer data)
+{
+  SuspendVerifyCtx *ctx = data;
+  g_autoptr(GError) error = NULL;
+
+  ctx->suspended_ok = fp_device_suspend_sync (ctx->device, NULL, &error);
+  g_assert_no_error (error);
+  g_assert_true (ctx->suspended_ok);
+  g_assert_cmpuint (trace_count ("close"), ==, 1);
+  g_timeout_add (20, do_resume_verify, ctx);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+test_verify_suspend_resume (void)
+{
+  g_autoptr(GError) error = NULL;
+  g_autoptr(FpContext) context = fp_context_new ();
+  FpDevice *device = only_device (context);
+
+  mode ("positive");
+  g_assert_true (fp_device_open_sync (device, NULL, &error));
+  g_assert_no_error (error);
+  g_autoptr(FpPrint) enrolled = enroll (device, "enroll");
+
+  /* Suspend during an active VERIFY must pause cleanly, close the hardware
+   * runtime, and seamlessly reopen & match once resumed. */
+  reset_trace ();
+  mode ("block");
+  SuspendVerifyCtx ctx = { .device = device };
+  g_timeout_add (20, do_suspend_verify, &ctx);
+  gboolean matched = FALSE;
+  g_assert_true (fp_device_verify_sync (device, enrolled, NULL, NULL, NULL,
+                                        &matched, NULL, &error));
+  g_assert_no_error (error);
+  g_assert_true (ctx.suspended_ok);
+  g_assert_true (ctx.resumed_ok);
+  g_assert_true (matched);
+  g_assert_cmpuint (trace_count ("close"), ==, 1);
+  g_assert_cmpuint (trace_count ("open"), ==, 1);
+
+  g_assert_true (fp_device_close_sync (device, NULL, &error));
+  g_assert_no_error (error);
+}
+
 static void
 test_private_frame_dump (void)
 {
@@ -949,7 +1108,6 @@ test_private_frame_dump (void)
   g_assert_cmpint (g_unlink (path), ==, 0);
   g_assert_cmpint (g_rmdir (directory), ==, 0);
 }
-
 int
 main (int argc, char **argv)
 {
@@ -970,6 +1128,8 @@ main (int argc, char **argv)
   g_test_add_func ("/fte3600/strip-retries", test_strip_retries);
   g_test_add_func ("/fte3600/fw9369-action-lifecycle", test_fw9369_action_lifecycle);
   g_test_add_func ("/fte3600/suspend-fallback", test_suspend_fallback);
+  g_test_add_func ("/fte3600/recoverable-session-and-retry", test_recoverable_session_and_retry);
+  g_test_add_func ("/fte3600/verify-suspend-resume", test_verify_suspend_resume);
   g_test_add_func ("/fte3600/template-cache", test_template_cache);
   int result = g_test_run ();
   g_unlink (trace_path);

@@ -55,6 +55,16 @@ failure (struct fte3600_linux_runtime_diagnostic *diag,
   diag->code = code;
   return code;
 }
+static enum fte3600_linux_runtime_error
+session_failure (struct fte3600_linux_runtime_diagnostic *diag,
+                 enum fte3600_device_error                device_error)
+{
+  memset (diag, 0, sizeof (*diag));
+  diag->code = FTE3600_RUNTIME_SESSION;
+  diag->device_error = device_error;
+  diag->has_session_status = 1;
+  return FTE3600_RUNTIME_SESSION;
+}
 static gchar *
 read_mode (const gchar *path)
 {
@@ -64,6 +74,8 @@ read_mode (const gchar *path)
     return g_strdup ("open-fail");
   return g_strstrip (mode);
 }
+static guint open_calib_calls = 0;
+
 enum fte3600_linux_runtime_error
 fte3600_linux_runtime_open (const struct fte3600_linux_runtime_config *config,
                             GCancellable *cancel, struct fte3600_linux_runtime **out,
@@ -77,6 +89,20 @@ fte3600_linux_runtime_open (const struct fte3600_linux_runtime_config *config,
     return failure (diag, FTE3600_RUNTIME_CANCELLED);
   if (g_str_equal (mode, "open-fail"))
     return failure (diag, FTE3600_RUNTIME_IO);
+  if (g_str_equal (mode, "open-unsupported-session"))
+    return session_failure (diag, FTE3600_DEVICE_UNSUPPORTED);
+  if (g_str_equal (mode, "open-calib-fail"))
+    return session_failure (diag, FTE3600_DEVICE_CALIBRATION_ERROR);
+  if (g_str_equal (mode, "open-calib-once"))
+    {
+      if (++open_calib_calls == 1)
+        return session_failure (diag, FTE3600_DEVICE_CALIBRATION_ERROR);
+      open_calib_calls = 0;
+    }
+  else
+    {
+      open_calib_calls = 0;
+    }
   struct fte3600_linux_runtime *runtime = g_new0 (struct fte3600_linux_runtime, 1);
   runtime->control = g_strdup (config->spidev_path);
   runtime->status = (struct fte3600_device_status){
@@ -139,6 +165,16 @@ fte3600_linux_runtime_capture (struct fte3600_linux_runtime *runtime,
     {
       runtime->failed = TRUE;
       return failure (diag, FTE3600_RUNTIME_CANCELLED);
+    }
+  if (g_str_equal (mode, "capture-unsupported-session"))
+    {
+      runtime->failed = TRUE;
+      return session_failure (diag, FTE3600_DEVICE_UNSUPPORTED);
+    }
+  if (g_str_equal (mode, "capture-session-loss"))
+    {
+      runtime->failed = TRUE;
+      return session_failure (diag, FTE3600_DEVICE_CALIBRATION_ERROR);
     }
   if (g_str_equal (mode, "capture-fail") || g_str_equal (mode, "sticky-fail"))
     runtime->failed = TRUE;

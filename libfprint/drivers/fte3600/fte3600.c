@@ -26,9 +26,13 @@ struct _FpiDeviceFte3600
   Fte3600AuthIdentity           identity;
   Fte3600AuthEnrollment        *enrollment;
   GCancellable                 *worker_cancel;
+  gulong                        cancel_handler_id;
   gboolean                      worker_active;
+  gboolean                      suspending;
+  gboolean                      suspended;
   gboolean                      needs_release;
   guint                         overlap_retries; /* Uninformative touches since the last decisive result. */
+  guint                         recovery_retries; /* Consecutive recoverable session losses. */
   GHashTable                   *template_cache; /* Worker-owned; immutable values, exact byte keys. */
   GQueue                        cache_order;
 };
@@ -218,6 +222,42 @@ dump_frame (const struct fte3600_linux_runtime_frame *frame)
     fp_dbg ("Frame dump to %s failed: %s", path, error ? error->message : g_strerror (errno));
 }
 
+/* A cold startup calibrates its baselines and therefore requires an
+ * uncovered sensor.  A finger already resting on the reader when an unlock
+ * starts makes that startup fail without any platform I/O error; one retry
+ * after a short pause lets a lifted finger stop poisoning the attempt.
+ * A lost FW9369 session during a fast client retry similarly has no platform
+ * error and is cleared by reopening the whole handle. */
+static gboolean
+recoverable_session (const struct fte3600_linux_runtime_diagnostic *d)
+{
+  const enum fte3600_device_error e = d->device_error;
+
+  if (d->system_error != 0)
+    return FALSE;
+  if (e == FTE3600_DEVICE_CALIBRATION_ERROR ||
+      e == FTE3600_DEVICE_STARTUP_ERROR ||
+      e == FTE3600_DEVICE_ACQUISITION_ERROR ||
+      e == FTE3600_DEVICE_RECOVERY_REQUIRED ||
+      e == FTE3600_DEVICE_NOT_READY)
+    return TRUE;
+  return d->code == FTE3600_RUNTIME_NOT_READY && e == FTE3600_DEVICE_OK;
+}
+
+static gboolean
+cancellable_sleep_ms (GCancellable *cancel, guint total_ms)
+{
+  const guint slice_ms = 20;
+
+  for (guint elapsed = 0; elapsed < total_ms; elapsed += slice_ms)
+    {
+      if (g_cancellable_is_cancelled (cancel))
+        return FALSE;
+      g_usleep ((gulong) MIN (slice_ms, total_ms - elapsed) * 1000UL);
+    }
+  return !g_cancellable_is_cancelled (cancel);
+}
+
 static void
 worker (GTask *task, gpointer source, gpointer task_data, GCancellable *cancel)
 {
@@ -241,6 +281,7 @@ worker (GTask *task, gpointer source, gpointer task_data, GCancellable *cancel)
       self->runtime = NULL;
       self->needs_release = FALSE;
       self->overlap_retries = 0;
+      self->recovery_retries = 0;
       goto out;
     }
   if (g_cancellable_set_error_if_cancelled (cancel, &error))
@@ -250,13 +291,33 @@ worker (GTask *task, gpointer source, gpointer task_data, GCancellable *cancel)
       struct fte3600_linux_runtime_config config = { .spidev_path = work->resource,
                                                     .fast_open = work->action == FPI_DEVICE_ACTION_OPEN };
       struct fte3600_device_status status;
-      Fte3600AuthIdentity opened_identity;
-      if (fte3600_linux_runtime_open (&config, cancel, &self->runtime, &diag))
-        error = runtime_error (&diag);
-      else if (fte3600_linux_runtime_get_status (self->runtime, &status) ||
-               !fte3600_auth_identity_from_status (&status, &opened_identity, &error))
-        if (!error)
-          error = fpi_device_error_new (FP_DEVICE_ERROR_GENERAL);
+      Fte3600AuthIdentity opened_identity = {0};
+
+      /* One clean retry for a calibration that failed because the sensor was
+       * already covered; see recoverable_session(). */
+      for (guint attempt = 0;; ++attempt)
+        {
+          memset (&diag, 0, sizeof (diag));
+          if (!fte3600_linux_runtime_open (&config, cancel, &self->runtime, &diag))
+            break;
+          if (attempt >= 1 || !recoverable_session (&diag) ||
+              g_cancellable_is_cancelled (cancel))
+            {
+              error = runtime_error (&diag);
+              goto opened;
+            }
+          if (!cancellable_sleep_ms (cancel, 1000))
+            {
+              g_cancellable_set_error_if_cancelled (cancel, &error);
+              goto opened;
+            }
+        }
+      if (fte3600_linux_runtime_get_status (self->runtime, &status) ||
+          !fte3600_auth_identity_from_status (&status, &opened_identity, &error))
+        {
+          if (!error)
+            error = fpi_device_error_new (FP_DEVICE_ERROR_GENERAL);
+        }
       if (!error)
         g_cancellable_set_error_if_cancelled (cancel, &error);
       if (!error && work->action != FPI_DEVICE_ACTION_OPEN &&
@@ -268,9 +329,14 @@ worker (GTask *task, gpointer source, gpointer task_data, GCancellable *cancel)
           self->identity = opened_identity;
           self->overlap_retries = 0;
         }
+      if (!error && work->action == FPI_DEVICE_ACTION_OPEN)
+        self->recovery_retries = 0;
+opened:
       if (error && self->runtime)
         {
-          fte3600_linux_runtime_close (self->runtime, &diag);
+          struct fte3600_linux_runtime_diagnostic close_diag = { 0 };
+
+          fte3600_linux_runtime_close (self->runtime, &close_diag);
           self->runtime = NULL;
         }
       if (error || work->action == FPI_DEVICE_ACTION_OPEN)
@@ -322,6 +388,7 @@ worker (GTask *task, gpointer source, gpointer task_data, GCancellable *cancel)
       goto out;
     }
   self->needs_release = TRUE;
+  self->recovery_retries = 0;
   fp_dbg ("Captured frame %" G_GUINT64_FORMAT ": model %u chip %04x %ux%u (+%u rows) image DAC %u contact %d%%",
           (guint64) work->frame.status.image_sequence, work->frame.status.model,
           work->frame.status.chip_id, work->frame.status.width, work->frame.status.height,
@@ -415,7 +482,9 @@ out:
     g_cancellable_set_error_if_cancelled (cancel, &error);
   if (error && work->action == FPI_DEVICE_ACTION_OPEN && self->runtime)
     {
-      fte3600_linux_runtime_close (self->runtime, &diag);
+      struct fte3600_linux_runtime_diagnostic close_diag = { 0 };
+
+      fte3600_linux_runtime_close (self->runtime, &close_diag);
       self->runtime = NULL;
       self->needs_release = FALSE;
     }
@@ -425,9 +494,26 @@ out:
       work->action != FPI_DEVICE_ACTION_CLOSE &&
       (hardware_failed || g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)))
     {
-      fte3600_linux_runtime_close (self->runtime, &diag);
+      struct fte3600_linux_runtime_diagnostic close_diag = { 0 };
+
+      fte3600_linux_runtime_close (self->runtime, &close_diag);
       self->runtime = NULL;
       self->needs_release = FALSE;
+    }
+  /* A recoverable sensor-session loss is not a user error: report a retryable
+   * failure.  The next attempt sees runtime == NULL, reopens the handle from
+   * scratch and therefore never re-enters the stale release/recovery state.
+   * Bounded so a genuinely broken sensor still surfaces a hard error. */
+  if (error && hardware_failed && !self->runtime &&
+      work->action != FPI_DEVICE_ACTION_OPEN &&
+      work->action != FPI_DEVICE_ACTION_CLOSE &&
+      error->domain == FP_DEVICE_ERROR &&
+      self->recovery_retries < 2 && recoverable_session (&diag))
+    {
+      ++self->recovery_retries;
+      g_clear_error (&error);
+      error = fpi_device_retry_new_msg (FP_DEVICE_RETRY_GENERAL,
+                                        "fingerprint sensor lost its session; retry to reopen");
     }
   if (error && error->domain == FP_DEVICE_RETRY)
     {
@@ -460,8 +546,31 @@ complete (GObject *source, GAsyncResult *result, gpointer user_data)
   (void) user_data;
   g_task_propagate_boolean (G_TASK (result), &error);
   report_observations (G_TASK (result));
+  if (self->cancel_handler_id)
+    {
+      GCancellable *action_cancel = fpi_device_get_cancellable (device);
+      if (action_cancel)
+        g_cancellable_disconnect (action_cancel, self->cancel_handler_id);
+      self->cancel_handler_id = 0;
+    }
   self->worker_active = FALSE;
   g_clear_object (&self->worker_cancel);
+
+  if (self->suspending)
+    {
+      struct fte3600_linux_runtime_diagnostic diag = { 0 };
+
+      self->suspending = FALSE;
+      if (self->runtime)
+        {
+          fte3600_linux_runtime_close (self->runtime, &diag);
+          self->runtime = NULL;
+          self->needs_release = FALSE;
+        }
+      self->suspended = TRUE;
+      fpi_device_suspend_complete (device, NULL);
+      return;
+    }
 
   if (work->action == FPI_DEVICE_ACTION_OPEN)
     {
@@ -569,6 +678,13 @@ append_print (GPtrArray *inputs, FpPrint *print, GError **error)
 }
 
 static void
+propagate_cancel (GCancellable *action_cancel, gpointer user_data)
+{
+  (void) action_cancel;
+  g_cancellable_cancel (G_CANCELLABLE (user_data));
+}
+
+static void
 start_work (FpDevice *device)
 {
   FpiDeviceFte3600 *self = FPI_DEVICE_FTE3600 (device);
@@ -609,7 +725,15 @@ start_work (FpDevice *device)
       fpi_device_action_error (device, g_steal_pointer (&error));
       return;
     }
-  self->worker_cancel = g_object_ref (fpi_device_get_cancellable (device));
+  self->worker_cancel = g_cancellable_new ();
+  {
+    GCancellable *action_cancel = fpi_device_get_cancellable (device);
+    if (action_cancel)
+      self->cancel_handler_id = g_cancellable_connect (action_cancel,
+                                                       G_CALLBACK (propagate_cancel),
+                                                       g_object_ref (self->worker_cancel),
+                                                       g_object_unref);
+  }
   self->worker_active = TRUE;
   if (work->action != FPI_DEVICE_ACTION_OPEN && work->action != FPI_DEVICE_ACTION_CLOSE)
     fpi_device_report_finger_status (device, self->needs_release &&
@@ -631,6 +755,55 @@ cancel (FpDevice *device)
 
   if (self->worker_cancel)
     g_cancellable_cancel (self->worker_cancel);
+}
+
+static void
+suspend (FpDevice *device)
+{
+  FpiDeviceFte3600 *self = FPI_DEVICE_FTE3600 (device);
+  FpiDeviceAction action = fpi_device_get_current_action (device);
+
+  if (action != FPI_DEVICE_ACTION_VERIFY && action != FPI_DEVICE_ACTION_IDENTIFY)
+    {
+      fpi_device_suspend_complete (device, fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
+      return;
+    }
+  if (!self->worker_active)
+    {
+      self->suspended = TRUE;
+      fpi_device_suspend_complete (device, NULL);
+      return;
+    }
+  self->suspending = TRUE;
+  if (self->worker_cancel)
+    g_cancellable_cancel (self->worker_cancel);
+}
+
+static void
+resume (FpDevice *device)
+{
+  FpiDeviceFte3600 *self = FPI_DEVICE_FTE3600 (device);
+  FpiDeviceAction action = fpi_device_get_current_action (device);
+
+  if (!self->suspended ||
+      (action != FPI_DEVICE_ACTION_VERIFY && action != FPI_DEVICE_ACTION_IDENTIFY))
+    {
+      fpi_device_resume_complete (device, fpi_device_error_new (FP_DEVICE_ERROR_NOT_SUPPORTED));
+      return;
+    }
+  self->suspended = FALSE;
+  fpi_device_resume_complete (device, NULL);
+  if (g_cancellable_is_cancelled (fpi_device_get_cancellable (device)))
+    {
+      GError *error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
+                                           "Fingerprint operation cancelled");
+      if (action == FPI_DEVICE_ACTION_VERIFY)
+        fpi_device_verify_complete (device, error);
+      else
+        fpi_device_identify_complete (device, error);
+      return;
+    }
+  start_work (device);
 }
 
 static void
@@ -680,5 +853,7 @@ fpi_device_fte3600_class_init (FpiDeviceFte3600Class *klass)
   device->identify = start_work;
   device->capture = start_work;
   device->cancel = cancel;
+  device->suspend = suspend;
+  device->resume = resume;
   fpi_device_class_auto_initialize_features (device);
 }
