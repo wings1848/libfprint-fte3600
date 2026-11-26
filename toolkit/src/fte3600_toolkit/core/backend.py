@@ -145,6 +145,10 @@ class DBusFprintBackend:
             self._bus = Gio.bus_get_sync(gio_bus, None)
         except GLib.Error as exc:
             raise _classify_glib_error(exc) from exc
+        # Dedicated GMainContext keeps D-Bus signal dispatch isolated from
+        # GLib.MainContext.default() so GTK4's main loop and worker threads
+        # never contend or execute UI callbacks on the wrong thread.
+        self._ctx = GLib.MainContext.new()
         self._device_path: str | None = None
 
     def _call(
@@ -324,24 +328,28 @@ class DBusFprintBackend:
                 result, done = params.unpack()
                 on_enroll_status(str(result), bool(done))
 
-        return int(
-            self._bus.signal_subscribe(
-                self._bus_name,
-                FPRINTD_DEVICE_IFACE,
-                None,
-                path,
-                None,
-                self._Gio.DBusSignalFlags.NONE,
-                _dispatch,
+        self._ctx.push_thread_default()
+        try:
+            return int(
+                self._bus.signal_subscribe(
+                    self._bus_name,
+                    FPRINTD_DEVICE_IFACE,
+                    None,
+                    path,
+                    None,
+                    self._Gio.DBusSignalFlags.NONE,
+                    _dispatch,
+                )
             )
-        )
+        finally:
+            self._ctx.pop_thread_default()
 
     def unsubscribe_signals(self, subscription_id: int) -> None:
         if subscription_id:
             self._bus.signal_unsubscribe(subscription_id)
 
     def pump_events(self, timeout_ms: int = 25) -> None:
-        ctx = self._GLib.MainContext.default()
+        ctx = self._ctx
         deadline = time.monotonic() + max(0.0, timeout_ms / 1000.0)
         while True:
             did_work = False

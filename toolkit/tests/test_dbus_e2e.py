@@ -304,6 +304,55 @@ class DBusEndToEndTests(unittest.TestCase):
             res = _run_cli(["--json", "status"], state_file)
             self.assertEqual(res.returncode, 2)
 
+    def test_worker_thread_verify_while_default_main_loop_runs(self) -> None:
+        """Reproduces the GTK4 GUI model: GLib.MainLoop owns default context on main thread."""
+        import threading
+        from gi.repository import GLib
+
+        sys.path.insert(0, str(SRC_DIR))
+        from fte3600_toolkit.core import DBusFprintBackend, run_verify_rounds
+
+        config = {
+            "claim_delay_ms": 40,
+            "enrolled": ["right-index-finger"],
+            "verify_scripts": [[["verify-match", True, 30]]],
+        }
+        with MockBusFixture(config) as mock:
+            loop = GLib.MainLoop()
+            outcome: dict[str, object] = {}
+
+            def _worker() -> None:
+                try:
+                    backend = DBusFprintBackend(bus_type="session")
+                    res = run_verify_rounds(
+                        backend,
+                        rounds=1,
+                        gap_seconds=0.0,
+                        inhibit_power_key=False,
+                    )
+                    outcome["result"] = res
+                except Exception as exc:  # pragma: no cover
+                    outcome["error"] = exc
+                finally:
+                    GLib.idle_add(loop.quit)
+
+            # Safety guard so a deadlock fails fast instead of hanging CI.
+            timeout_id = GLib.timeout_add(5000, loop.quit)
+            t = threading.Thread(target=_worker, daemon=True)
+            t.start()
+            loop.run()
+            GLib.source_remove(timeout_id)
+            t.join(timeout=2.0)
+
+            self.assertNotIn("error", outcome, outcome.get("error"))
+            self.assertIn("result", outcome, "Worker thread timed out / deadlocked against default GLib.MainLoop")
+            res = outcome["result"]
+            self.assertEqual(res.exit_code, 0)
+            self.assertEqual(res.matches, 1)
+            stats = mock.get_stats()
+            self.assertEqual(stats["claim_calls"], 1)
+            self.assertEqual(stats["release_calls"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
