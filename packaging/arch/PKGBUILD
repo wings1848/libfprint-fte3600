@@ -59,10 +59,11 @@ build() {
     -Dinstalled-tests=false
   )
 
+  rm -rf "$srcdir/build" "$srcdir/toolkit-dist"
   meson setup "$srcdir/build" "$srcdir/libfprint" "${meson_args[@]}"
   meson compile -C "$srcdir/build"
 
-  python -m build --wheel --no-isolation "$srcdir/libfprint/toolkit"
+  python -m build --wheel --no-isolation --outdir "$srcdir/toolkit-dist" "$srcdir/libfprint/toolkit"
 }
 
 check() {
@@ -72,15 +73,17 @@ check() {
     fte3600-linux-board fte3600-linux-runtime fte3600-device-session \
     fte3600-fw9369-release fte3600-fw9369-runtime fte3600-probe fte3600-open-bench
 
-  python -W error::ResourceWarning -m unittest discover \
+  python -W error::ResourceWarning -W error::RuntimeWarning -m unittest discover \
     -s "$srcdir/libfprint/toolkit/tests" -p 'test_core_unit.py' -v
-  dbus-run-session -- python -W error::ResourceWarning -m unittest \
-    "$srcdir/libfprint/toolkit/tests/test_dbus_e2e.py" -v
+  dbus-run-session -- python -W error::ResourceWarning -W error::RuntimeWarning -m unittest discover \
+    -s "$srcdir/libfprint/toolkit/tests" -p 'test_dbus_e2e.py' -v
 }
 
 package() {
   DESTDIR="$pkgdir" meson install -C "$srcdir/build"
-  python -m installer --destdir="$pkgdir" "$srcdir/libfprint/toolkit/dist/"*.whl
+  python -m installer --destdir="$pkgdir" "$srcdir/toolkit-dist/"*.whl
+  install -Dm644 "$srcdir/libfprint/toolkit/data/org.freedesktop.libfprint.Fte3600Toolkit.desktop" \
+    "$pkgdir/usr/share/applications/org.freedesktop.libfprint.Fte3600Toolkit.desktop"
 
   install -Dm644 "$srcdir/libfprint/kernel/fte3600/dkms.conf" "$pkgdir/usr/src/fte3600-0.2/dkms.conf"
   for file in fte3600.c fte3600-policy.h fte3600-policy-test.c Makefile; do

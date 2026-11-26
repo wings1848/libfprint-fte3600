@@ -3,18 +3,25 @@
 ## Arch Linux
 
 Install `base-devel`, Git, and headers matching your kernel (`linux-headers`,
-`linux-lts-headers`, or the equivalent for your kernel). Then:
+`linux-lts-headers`, or the equivalent for your kernel). Then install with
+`paru` (automatically resolves `makedepends` including `python-build` and
+`python-installer`) or `makepkg`:
 
 ```sh
-git clone https://github.com/SamSeven777/libfprint-fte3600.git
+git clone https://github.com/wings1848/libfprint-fte3600.git
+# Using paru (recommended):
+paru -Bi libfprint-fte3600/packaging/arch
+
+# Or using makepkg directly:
 cd libfprint-fte3600/packaging/arch
 makepkg -si
 sudo pacman -S fprintd
 ```
 
-The package fetches the main branch, replaces `libfprint`, and installs the
-DKMS module, pairing rules and `fte3600-tool`. DKMS builds for kernels with
-installed headers. Reboot to load the module and apply the SPI buffer setting.
+The package fetches the `main` branch, replaces `libfprint`, and installs the
+DKMS module, pairing rules, `fte3600-tool`, `fte3600-toolkit` (CLI), and
+`fte3600-toolkit-gui` (GTK4/libadwaita desktop app). DKMS builds for kernels
+with installed headers. Reboot to load the module and apply the SPI buffer setting.
 
 After reboot:
 

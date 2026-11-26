@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=FTE3600 Fingerprint Toolkit
+Name[zh_CN]=FTE3600 指纹工具
+Comment=Enroll, test, and diagnose FTE3600 / GPD fingerprint readers over fprintd
+Comment[zh_CN]=基于 fprintd 录入、测试与诊断 FTE3600 / GPD 指纹识别器
+Exec=fte3600-toolkit-gui
+Icon=fingerprint-gui
+Terminal=false
+Categories=Settings;HardwareSettings;GTK;
+Keywords=fingerprint;fprintd;fte3600;gpd;biometric;
+StartupNotify=true
