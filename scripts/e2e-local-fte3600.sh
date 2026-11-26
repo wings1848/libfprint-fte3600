@@ -74,17 +74,28 @@ if [ "$UNINSTALL_OLD" -eq 1 ]; then
   if command -v pacman >/dev/null 2>&1 && pacman -Q libfprint-fte3600-personal-git >/dev/null 2>&1; then
     echo "==> Replacing old libfprint-fte3600-personal-git with stock libfprint..."
     sudo pacman -S libfprint
-    sudo systemctl daemon-reload
   else
     echo "==> Old package libfprint-fte3600-personal-git is not installed (skipping)."
   fi
+  if [ -e /etc/systemd/system/fprintd.service.d/10-fte3600-acpi-spidev.conf ]; then
+    echo "==> Removing stale fprintd drop-in from old package..."
+    sudo rm -f /etc/systemd/system/fprintd.service.d/10-fte3600-acpi-spidev.conf
+    sudo systemctl daemon-reload
+  fi
 fi
 
-# Verify kernel glue & spidev buffer are live before launching fprintd.
-if ! compgen -G "/dev/fte3600-spi-*" >/dev/null || \
-   ! compgen -G "/dev/fte3600-gpio-*" >/dev/null || \
-   ! compgen -G "/dev/fte3600-irq-*" >/dev/null; then
-  echo "error: /dev/fte3600-{spi,gpio,irq}-* device nodes are missing." >&2
+# Verify kernel glue & spidev buffer are live in the running kernel.
+# Note: /dev/fte3600-* udev symlinks are only required by systemd fprintd.service
+# sandboxing; the local fprintd process discovers spidev/gpio/uio via sysfs.
+GLUE_READY=0
+for status_file in /sys/bus/platform/devices/fte3600-glue*/fte3600_status; do
+  if [ -r "$status_file" ] && [ "$(cat "$status_file" 2>/dev/null)" = "ready" ]; then
+    GLUE_READY=1
+    break
+  fi
+done
+if [ "$GLUE_READY" -ne 1 ]; then
+  echo "error: fte3600-glue platform device is not ready in /sys/bus/platform/devices/." >&2
   echo "       If you rebooted after uninstalling the old package, install kernel glue only:" >&2
   echo "         sudo ./scripts/setup-fte3600.sh install-kernel" >&2
   exit 1
@@ -147,8 +158,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "==> Authenticating sudo (used ONLY to start/stop temporary fprintd)..."
+echo "==> Authenticating sudo (used ONLY to verify hardware pair & run temporary fprintd)..."
 sudo -v
+
+echo "==> Validating live SPI/GPIO/UIO hardware pair..."
+sudo python3 "$REPO_DIR/scripts/fte3600-pair.py"
 
 if systemctl is-active --quiet fprintd.service 2>/dev/null; then
   WAS_ACTIVE=1
@@ -223,14 +237,24 @@ else
   echo "=== [3/4] Interactive Timed Verification ($ROUNDS rounds, finger=$FINGER) ==="
   PYTHONPATH="$REPO_DIR/toolkit/src" python3 -m fte3600_toolkit verify \
     --finger "$FINGER" --rounds "$ROUNDS" --state-file "$STATE_FILE" --lang "$LANG_OPT" || true
-
-  echo ""
-  echo "=== [4/4] Session Telemetry Report ==="
-  PYTHONPATH="$REPO_DIR/toolkit/src" python3 -m fte3600_toolkit report \
-    --mode all --state-file "$STATE_FILE" --lang "$LANG_OPT"
 fi
 
 echo ""
-echo "=== Driver Debug Summary (BRISK & Capture Telemetry) ==="
-grep -E "Captured frame|Frame [0-9]+ (matched|no match)|Retry [0-9]+|Sensor profile|session|fast" "$FPRINTD_LOG" || \
-  echo "(no driver capture lines recorded)"
+echo "=== [4/4] Session Telemetry Report & Driver Summary ==="
+SUMMARY_FILE="/tmp/fte3600-e2e-last-summary.txt"
+{
+  echo "=== Local E2E Summary ($(date -Iseconds)) ==="
+  echo "Library: $LOCAL_LIB_SO"
+  echo "Finger: $FINGER | Rounds: $ROUNDS | GUI: $GUI_MODE"
+  echo ""
+  echo "=== Session Telemetry Report ==="
+  PYTHONPATH="$REPO_DIR/toolkit/src" python3 -m fte3600_toolkit report \
+    --mode all --state-file "$STATE_FILE" --lang "$LANG_OPT" || true
+  echo ""
+  echo "=== Driver Debug Summary (BRISK & Capture Telemetry) ==="
+  grep -E "Captured frame|Frame [0-9]+ (matched|no match)|Retry [0-9]+|Sensor profile|session|fast" "$FPRINTD_LOG" || \
+    echo "(no driver capture lines recorded)"
+} | tee "$SUMMARY_FILE"
+chmod 600 "$SUMMARY_FILE" 2>/dev/null || true
+echo ""
+echo "==> Non-biometric summary saved to: $SUMMARY_FILE"
