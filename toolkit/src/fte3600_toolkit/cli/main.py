@@ -45,31 +45,50 @@ def _restore_signal_handlers(previous: dict[int, object]) -> None:
         signal.signal(sig, handler)
 
 
+def _add_common_options(parser: argparse.ArgumentParser, *, suppress_defaults: bool) -> None:
+    d_false = argparse.SUPPRESS if suppress_defaults else False
+    d_auto = argparse.SUPPRESS if suppress_defaults else "auto"
+    d_none = argparse.SUPPRESS if suppress_defaults else None
+    d_empty = argparse.SUPPRESS if suppress_defaults else ""
+
+    parser.add_argument("--json", action="store_true", default=d_false, help="Emit machine-readable JSON output")
+    parser.add_argument("--lang", choices=("auto", "en", "zh"), default=d_auto, help="UI language")
+    parser.add_argument("--state-file", default=d_none, help="Override path to rounds.jsonl")
+    parser.add_argument("--user", default=d_empty, help="Target username (empty = current logged-in user)")
+    parser.add_argument("--no-sound", action="store_true", default=d_false, help="Disable audio cues")
+    parser.add_argument("--no-notify", action="store_true", default=d_false, help="Disable desktop notifications")
+    parser.add_argument(
+        "--no-power-inhibit",
+        action="store_true",
+        default=d_false,
+        help="Do not acquire systemd-logind handle-power-key inhibitor lock",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fte3600-toolkit",
         description="Unprivileged enrollment, timed verification, and diagnostics for FTE3600 / GPD fingerprint readers.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
-    parser.add_argument("--lang", choices=("auto", "en", "zh"), default="auto", help="UI language")
-    parser.add_argument("--state-file", default=None, help="Override path to rounds.jsonl")
-    parser.add_argument("--user", default="", help="Target username (empty = current logged-in user)")
-    parser.add_argument("--no-sound", action="store_true", help="Disable audio cues")
-    parser.add_argument("--no-notify", action="store_true", help="Disable desktop notifications")
-    parser.add_argument(
-        "--no-power-inhibit",
-        action="store_true",
-        help="Do not acquire systemd-logind handle-power-key inhibitor lock",
-    )
+    _add_common_options(parser, suppress_defaults=False)
+
+    # Allow global flags both before and after the subcommand without clobbering
+    # values already parsed at the top level.
+    common_sub = argparse.ArgumentParser(add_help=False)
+    _add_common_options(common_sub, suppress_defaults=True)
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("status", help="Show default fprintd device, scan type, and enrolled fingers")
-    sub.add_parser("doctor", help="Run unprivileged read-only diagnostics for ACPI, glue, spidev, fprintd, and PowerDevil")
-    sub.add_parser("list", help="List enrolled fingers for the user")
+    sub.add_parser("status", parents=[common_sub], help="Show default fprintd device, scan type, and enrolled fingers")
+    sub.add_parser(
+        "doctor",
+        parents=[common_sub],
+        help="Run unprivileged read-only diagnostics for ACPI, glue, spidev, fprintd, and PowerDevil",
+    )
+    sub.add_parser("list", parents=[common_sub], help="List enrolled fingers for the user")
 
-    p_verify = sub.add_parser("verify", help="Run N timed verification rounds and record telemetry")
+    p_verify = sub.add_parser("verify", parents=[common_sub], help="Run N timed verification rounds and record telemetry")
     p_verify.add_argument("--rounds", type=int, default=5, help="Number of rounds (default: 5)")
     p_verify.add_argument(
         "--finger",
@@ -81,7 +100,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("--timeout", type=float, default=45.0, help="Per-round capture timeout in seconds (default: 45)")
     p_verify.add_argument("--no-record", action="store_true", help="Do not append rounds to rounds.jsonl")
 
-    p_enroll = sub.add_parser("enroll", help="Enroll a finger with per-stage progress feedback")
+    p_enroll = sub.add_parser("enroll", parents=[common_sub], help="Enroll a finger with per-stage progress feedback")
     p_enroll.add_argument(
         "--finger",
         default="right-index-finger",
@@ -91,11 +110,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_enroll.add_argument("--timeout", type=float, default=180.0, help="Enrollment timeout in seconds (default: 180)")
     p_enroll.add_argument("--no-record", action="store_true", help="Do not append enroll outcome to rounds.jsonl")
 
-    p_delete = sub.add_parser("delete", help="Delete one enrolled finger or all fingers")
+    p_delete = sub.add_parser("delete", parents=[common_sub], help="Delete one enrolled finger or all fingers")
     p_delete.add_argument("--finger", choices=ENROLLABLE_FINGERS, help="Specific finger to delete")
     p_delete.add_argument("--all", action="store_true", help="Delete all enrolled fingers for the user")
 
-    p_report = sub.add_parser("report", help="Aggregate match rate, latency medians, and failure breakdown")
+    p_report = sub.add_parser("report", parents=[common_sub], help="Aggregate match rate, latency medians, and failure breakdown")
     p_report.add_argument("--mode", choices=("verify", "enroll", "all"), default="verify")
     p_report.add_argument("--finger", default=None, help="Filter report to one finger name")
 

@@ -36,11 +36,15 @@ class GuiSmokeTests(unittest.TestCase):
         self.assertEqual(APP_ID, "org.freedesktop.libfprint.Fte3600Toolkit")
         self.assertIsNotNone(ToolkitApplication)
 
-        # Instantiate GTK widgets only when a display server is reachable.
-        if not (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")):
-            self.skipTest("No Wayland/X11 display available for widget instantiation")
+        from gi.repository import Adw, Gdk, Gio, Gtk
 
-        from gi.repository import Adw, Gio
+        # Instantiate GTK widgets only when a display server is actually reachable.
+        if not (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")):
+            self.skipTest("No Wayland/X11 display environment variable set")
+        init_res = Gtk.init_check()
+        init_ok = init_res[0] if isinstance(init_res, tuple) else bool(init_res)
+        if not init_ok or Gdk.Display.get_default() is None:
+            self.skipTest("Wayland/X11 display is not reachable")
 
         Adw.init()
         ring = ProgressRing(total_stages=9)
@@ -56,7 +60,8 @@ class GuiSmokeTests(unittest.TestCase):
             inhibit_power_key=False,
             flags=Gio.ApplicationFlags.NON_UNIQUE,
         )
-        # Register and construct window directly without blocking main loop.
+        # Register the GApplication so GApplication::startup runs before adding a window.
+        app.register(None)
         from fte3600_toolkit.gui.window import ToolkitWindow
 
         win = ToolkitWindow(

@@ -328,6 +328,20 @@ class SessionStateMachineTests(unittest.TestCase):
         self.assertEqual(res.exit_code, 2)
         self.assertIn("already_claimed", res.device_error or "")
 
+    def test_cli_accepts_global_flags_before_or_after_subcommand(self) -> None:
+        from fte3600_toolkit.cli.main import _build_parser
+
+        parser = _build_parser()
+        a = parser.parse_args(["--json", "--lang", "zh", "--no-sound", "status"])
+        b = parser.parse_args(["status", "--json", "--lang", "zh", "--no-sound"])
+        c = parser.parse_args(["--json", "verify", "--rounds", "3", "--no-notify"])
+        self.assertTrue(a.json and b.json and c.json)
+        self.assertEqual(a.lang, "zh")
+        self.assertEqual(b.lang, "zh")
+        self.assertTrue(a.no_sound and b.no_sound)
+        self.assertTrue(c.no_notify)
+        self.assertEqual(c.rounds, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
