@@ -159,7 +159,15 @@ class DBusFprintBackend:
         params=None,
         *,
         timeout_ms: int | None = None,
+        allow_interactive_auth: bool = False,
     ):
+        flags = self._Gio.DBusCallFlags.NONE
+        if allow_interactive_auth:
+            flags = getattr(
+                self._Gio.DBusCallFlags,
+                "ALLOW_INTERACTIVE_AUTHORIZATION",
+                self._Gio.DBusCallFlags.NONE,
+            )
         try:
             return self._bus.call_sync(
                 self._bus_name,
@@ -168,7 +176,7 @@ class DBusFprintBackend:
                 method,
                 params,
                 None,
-                self._Gio.DBusCallFlags.NONE,
+                flags,
                 timeout_ms if timeout_ms is not None else self._timeout_ms,
                 None,
             )
@@ -235,6 +243,8 @@ class DBusFprintBackend:
                 FPRINTD_DEVICE_IFACE,
                 "DeleteEnrolledFinger",
                 self._GLib.Variant("(s)", (finger,)),
+                timeout_ms=max(self._timeout_ms, 120000),
+                allow_interactive_auth=True,
             )
         finally:
             try:
@@ -249,17 +259,21 @@ class DBusFprintBackend:
             FPRINTD_DEVICE_IFACE,
             "DeleteEnrolledFingers",
             self._GLib.Variant("(s)", (username,)),
+            timeout_ms=max(self._timeout_ms, 120000),
+            allow_interactive_auth=True,
         )
 
     def claim(self, username: str = "") -> None:
         path = self._resolve_device_path()
-        # Claim wakes up FTE3600 (~4-5 s, up to ~10 s with cold-open retry).
+        # Claim wakes up FTE3600 (~4-5 s, up to ~10 s with cold-open retry) and
+        # may trigger a Polkit dialog when targeting another username.
         self._call(
             path,
             FPRINTD_DEVICE_IFACE,
             "Claim",
             self._GLib.Variant("(s)", (username,)),
-            timeout_ms=max(self._timeout_ms, 60000),
+            timeout_ms=max(self._timeout_ms, 120000),
+            allow_interactive_auth=True,
         )
 
     def release(self) -> None:
@@ -300,6 +314,8 @@ class DBusFprintBackend:
             FPRINTD_DEVICE_IFACE,
             "EnrollStart",
             self._GLib.Variant("(s)", (finger,)),
+            timeout_ms=max(self._timeout_ms, 120000),
+            allow_interactive_auth=True,
         )
 
     def enroll_stop(self) -> None:
