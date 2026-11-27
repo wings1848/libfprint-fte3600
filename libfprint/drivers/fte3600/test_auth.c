@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "fte3600_auth.h"
-#include "fte3600_auth_preprocess.h"
 #include "auth_test_image.h"
 #include "sam7-brisk/libfprint/matchers/brisk/brisk.h"
 #include <glib/gstdio.h>
@@ -79,13 +78,10 @@ test_profile (gconstpointer data)
   g_assert_true (g_bytes_equal (wire, again));
   g_assert_true (fte3600_auth_identity_equal (&identity, fte3600_auth_template_identity (loaded)));
 
-  /* Stored first features must equal a direct CLAHE + single normalization
+  /* Stored first features must equal a direct single-normalization
    * extraction of native pixels, field by field, independent of struct layout. */
   fte3600_auth_test_image (image, identity.width, identity.height, FTE3600_AUTH_TEST_SEED, 0);
-  g_autofree guint8 *preprocessed = g_malloc (size);
-  g_assert_true (fte3600_auth_preprocess_clahe (image, size, identity.width,
-                                                identity.width, identity.height, preprocessed));
-  FpiBriskImage original = {preprocessed, size, identity.width, identity.height, identity.width};
+  FpiBriskImage original = {image, size, identity.width, identity.height, identity.width};
   FpiBriskFeatureSet expected;
   g_assert_cmpint (fpi_brisk_extract (&original, &expected), ==, FPI_BRISK_OK);
   const guint8 *encoded = g_bytes_get_data (wire, NULL);
@@ -147,7 +143,8 @@ test_profile (gconstpointer data)
 static void
 test_rejects (void)
 {
-  Fte3600AuthIdentity identity = identity_for (&identities[2]);
+  /* Large press sensor (88x88) retains strict enrollment chaining. */
+  Fte3600AuthIdentity identity = identity_for (&identities[0]);
 
   g_autoptr(GError) error = NULL;
   g_autoptr(Fte3600AuthEnrollment) enrollment = fte3600_auth_enrollment_new (&identity, NULL);
@@ -807,88 +804,6 @@ test_codec (void)
 }
 
 static void
-test_clahe_determinism_and_blank_guard (void)
-{
-  const guint width = 64, height = 80;
-  const gsize size = width * height, stride = width + 5;
-  g_autofree guint8 *src = g_malloc (size);
-  g_autofree guint8 *src_copy = g_malloc (size);
-  g_autofree guint8 *padded = g_malloc0 (stride * height);
-  g_autofree guint8 *out_a = g_malloc (size);
-  g_autofree guint8 *out_b = g_malloc (size);
-  g_autofree guint8 *out_padded = g_malloc (size);
-
-  fte3600_auth_test_image (src, width, height, FTE3600_AUTH_TEST_SEED, 0);
-  memcpy (src_copy, src, size);
-  for (guint y = 0; y < height; y++)
-    memcpy (padded + y * stride, src + y * width, width);
-
-  g_assert_true (fte3600_auth_preprocess_clahe (src, size, width, width, height, out_a));
-  g_assert_true (fte3600_auth_preprocess_clahe (src, size, width, width, height, out_b));
-  g_assert_true (fte3600_auth_preprocess_clahe (padded, stride * height, stride, width, height, out_padded));
-  /* Input buffer must never be mutated, and packed vs strided outputs must match bit-for-bit. */
-  g_assert_cmpmem (src, size, src_copy, size);
-  g_assert_cmpmem (out_a, size, out_b, size);
-  g_assert_cmpmem (out_a, size, out_padded, size);
-
-  /* Near-uniform / blank frames (max - min < 12) must pass through unchanged
-   * so blank frames are never amplified into synthetic features. */
-  guint8 flat[64 * 80];
-  for (gsize i = 0; i < sizeof flat; i++)
-    flat[i] = 120u + (guint8) (i % 10u);
-  g_assert_true (fte3600_auth_preprocess_clahe (flat, sizeof flat, 64, 64, 80, out_a));
-  g_assert_cmpmem (out_a, sizeof flat, flat, sizeof flat);
-
-  Fte3600AuthIdentity identity = identity_for (&identities[2]);
-  g_autoptr(GError) error = NULL;
-  memset (flat, 128, sizeof flat);
-  g_assert_null (fte3600_auth_probe_new (&identity, flat, sizeof flat, 64, &error));
-  g_assert_error (error, FTE3600_AUTH_ERROR, FTE3600_AUTH_LOW_QUALITY);
-  g_clear_error (&error);
-
-  /* Invalid bounds/stride must be rejected cleanly. */
-  g_assert_false (fte3600_auth_preprocess_clahe (NULL, size, width, width, height, out_a));
-  g_assert_false (fte3600_auth_preprocess_clahe (src, size - 1, width, width, height, out_a));
-  g_assert_false (fte3600_auth_preprocess_clahe (src, size, width - 1, width, height, out_a));
-}
-
-static void
-test_clahe_low_contrast_extraction (void)
-{
-  const guint width = 64, height = 80;
-  const gsize size = width * height;
-  guint8 raw[64 * 80];
-  guint8 clahe[64 * 80];
-
-  /* Build a synthetic 64x80 ridge/spot field with severe uneven lighting and
-   * compressed local amplitude so raw extraction misses features. */
-  fte3600_auth_test_image (raw, width, height, FTE3600_AUTH_TEST_SEED, 0);
-  for (guint y = 0; y < height; y++)
-    for (guint x = 0; x < width; x++)
-      {
-        const gdouble centered = ((gdouble) raw[y * width + x] - 128.0) * 0.14;
-        const gdouble bias = 50.0 + 130.0 * ((gdouble) x / (width - 1)) * 0.65 +
-                             45.0 * ((gdouble) y / (height - 1));
-        raw[y * width + x] = (guint8) CLAMP (floor (bias + centered + 0.5), 1, 254);
-      }
-
-  FpiBriskImage raw_img = { raw, size, width, height, width };
-  FpiBriskFeatureSet raw_features = { 0 };
-  FpiBriskStatus raw_status = fpi_brisk_extract (&raw_img, &raw_features);
-
-  g_assert_true (fte3600_auth_preprocess_clahe (raw, size, width, width, height, clahe));
-  FpiBriskImage clahe_img = { clahe, size, width, height, width };
-  FpiBriskFeatureSet clahe_features = { 0 };
-  FpiBriskStatus clahe_status = fpi_brisk_extract (&clahe_img, &clahe_features);
-
-  g_test_message ("low-contrast 64x80: raw_status=%d raw_n=%u clahe_status=%d clahe_n=%u",
-                  (int) raw_status, raw_features.n_features,
-                  (int) clahe_status, clahe_features.n_features);
-  g_assert_cmpint (clahe_status, ==, FPI_BRISK_OK);
-  g_assert_true (raw_status != FPI_BRISK_OK || clahe_features.n_features > raw_features.n_features);
-}
-
-static void
 test_processing_version_rejected (void)
 {
   Fte3600AuthIdentity identity = identity_for (&identities[2]);
@@ -896,13 +811,16 @@ test_processing_version_rejected (void)
   g_autoptr(GBytes) wire = fte3600_auth_template_encode (print);
   gsize size = 0;
   const guint8 *data = g_bytes_get_data (wire, &size);
-  g_autofree guint8 *legacy = g_memdup2 (data, size);
 
-  /* Mutate processing_version (bytes 18..19) back to 0x1001u and rehash. */
-  legacy[18] = 0x10;
-  legacy[19] = 0x01;
-  rehash (legacy, size);
-  expect_invalid (legacy, size);
+  /* Mutate processing_version (bytes 18..19) back to legacy 0x1001u and 0x1002u. */
+  for (guint8 low = 0x01; low <= 0x02; low++)
+    {
+      g_autofree guint8 *legacy = g_memdup2 (data, size);
+      legacy[18] = 0x10;
+      legacy[19] = low;
+      rehash (legacy, size);
+      expect_invalid (legacy, size);
+    }
 }
 
 static void
@@ -913,6 +831,9 @@ test_two_tier_enrollment_gate (void)
   g_autoptr(Fte3600AuthEnrollment) enrollment = fte3600_auth_enrollment_new (&identity, &error);
   g_assert_no_error (error);
 
+  /* Small 64x80 press sensors use coverage enrollment so edge/shifted touches
+   * that widen fingertip coverage are accepted as long as they are distinct and
+   * pass strict single-frame spatial quality checks. */
   guint8 anchor[64 * 80];
   fte3600_auth_test_image (anchor, 64, 80, FTE3600_AUTH_TEST_SEED, 0);
   guint count = 0;
@@ -920,81 +841,30 @@ test_two_tier_enrollment_gate (void)
   g_assert_no_error (error);
   g_assert_cmpuint (count, ==, 1);
 
-  /* Create a shifted/partially degraded same-finger 64x80 capture by taking a
-   * larger translation and masking one strip to 128 so strict verification
-   * (inlier_ratio / spatial spread / error) fails while the relaxed two-tier
-   * enrollment consistency chain passes. */
-  guint8 anchor_clahe[64 * 80];
-  g_assert_true (fte3600_auth_preprocess_clahe (anchor, sizeof anchor, 64, 64, 80, anchor_clahe));
-  FpiBriskImage anchor_img = { anchor_clahe, sizeof anchor_clahe, 64, 80, 64 };
-  FpiBriskFeatureSet anchor_features = { 0 };
-  g_assert_cmpint (fpi_brisk_extract (&anchor_img, &anchor_features), ==, FPI_BRISK_OK);
+  /* Duplicate and flat/blank captures must still be rejected. */
+  g_assert_false (fte3600_auth_enrollment_add (enrollment, anchor, sizeof anchor, 64, &count, &error));
+  g_assert_error (error, FTE3600_AUTH_ERROR, FTE3600_AUTH_DUPLICATE);
+  g_clear_error (&error);
 
-  guint8 degraded[64 * 80];
-  gboolean found_tier2 = FALSE;
-  for (guint step = 0; step <= 20 && !found_tier2; step++)
-    {
-      const gdouble scale = 1.100 + step * 0.005;
-      for (gint dx = -2; dx <= 2 && !found_tier2; dx++)
-        {
-          for (guint y = 0; y < 80; y++)
-            for (guint x = 0; x < 64; x++)
-              {
-                const gint sx = CLAMP ((gint) floor (32.0 + (x - 32.0 - dx) / scale + 0.5), 0, 63);
-                const gint sy = CLAMP ((gint) floor (40.0 + (y - 40.0) / scale + 0.5), 0, 79);
-                degraded[y * 64 + x] = anchor[sy * 64 + sx];
-              }
+  guint8 flat[64 * 80];
+  memset (flat, 128, sizeof flat);
+  g_assert_false (fte3600_auth_enrollment_add (enrollment, flat, sizeof flat, 64, &count, &error));
+  g_assert_error (error, FTE3600_AUTH_ERROR, FTE3600_AUTH_LOW_QUALITY);
+  g_clear_error (&error);
 
-          guint8 deg_clahe[64 * 80];
-          g_assert_true (fte3600_auth_preprocess_clahe (degraded, sizeof degraded, 64, 64, 80, deg_clahe));
-          FpiBriskImage deg_img = { deg_clahe, sizeof deg_clahe, 64, 80, 64 };
-          FpiBriskFeatureSet deg_features = { 0 };
-          if (fpi_brisk_extract (&deg_img, &deg_features) != FPI_BRISK_OK)
-            continue;
-          FpiBriskMatchEvidence self_ev = { 0 };
-          if (fpi_brisk_match (&deg_features, 64, 80, &deg_features, 64, 80, &self_ev) != FPI_BRISK_OK ||
-              self_ev.inliers < 5u || self_ev.query_min_variance < 3.0)
-            continue;
-          FpiBriskMatchEvidence ev = { 0 };
-          FpiBriskStatus st = fpi_brisk_match (&deg_features, 64, 80, &anchor_features, 64, 80, &ev);
-          if (st != FPI_BRISK_OK)
-            continue;
-          gboolean strict_ok = ev.inliers >= 5u && ev.inlier_ratio >= 0.20 &&
-                               ev.median_error < 1.25 && ev.rms_error < 1.40 &&
-                               ev.mean_hamming <= 60.0 && ev.query_min_variance >= 3.0 &&
-                               ev.reference_min_variance >= 3.0 &&
-                               ev.inliers - ev.competing_inliers >= 1;
-          gboolean tier2_ok = ev.mutual_matches >= 6u && ev.inliers >= 4u &&
-                              ev.competing_inliers < ev.inliers &&
-                              ev.inlier_ratio >= 0.14 && ev.rms_error < 1.85 &&
-                              ev.mean_hamming <= 68.0;
-          if (!strict_ok && tier2_ok)
-            {
-              found_tier2 = TRUE;
-              g_test_message ("tier2 candidate scale=%.3f dx=%d: mutual=%u inliers=%u comp=%u ratio=%.2f rms=%.2f med=%.2f ham=%.1f",
-                              scale, dx, ev.mutual_matches, ev.inliers, ev.competing_inliers,
-                              ev.inlier_ratio, ev.rms_error, ev.median_error, ev.mean_hamming);
-            }
-        }
-    }
-  g_assert_true (found_tier2);
-
-  /* Enrollment must accept this degraded same-finger 64x80 capture via tier-2. */
-  g_assert_true (fte3600_auth_enrollment_add (enrollment, degraded, sizeof degraded, 64, &count, &error));
+  /* Shifted / partially masked same-finger capture with low overlap is accepted
+   * into the 64x80 coverage template, expanding finger coverage. */
+  guint8 shifted[64 * 80];
+  for (guint y = 0; y < 80; y++)
+    for (guint x = 0; x < 64; x++)
+      shifted[y * 64 + x] = x < 16 ? 128 : anchor[y * 64 + (x - 16)];
+  g_assert_true (fte3600_auth_enrollment_add (enrollment, shifted, sizeof shifted, 64, &count, &error));
   g_assert_no_error (error);
   g_assert_cmpuint (count, ==, 2);
 
-  /* Impostor finger must STILL be rejected by consistent() during enrollment. */
-  guint8 impostor[64 * 80];
-  fte3600_auth_test_image (impostor, 64, 80, FTE3600_AUTH_TEST_OTHER_SEED, 0);
-  g_assert_false (fte3600_auth_enrollment_add (enrollment, impostor, sizeof impostor, 64, &count, &error));
-  g_assert_error (error, FTE3600_AUTH_ERROR, FTE3600_AUTH_INCONSISTENT);
-  g_clear_error (&error);
-  g_assert_cmpuint (count, ==, 2);
-
-  /* Verification must STILL require strict authentication_accepted: enroll a full
-   * 12-sample template and verify both that an impostor is rejected and that a
-   * degraded same-finger probe failing authentication_accepted is rejected. */
+  /* Complete 12-sample enrollment and verify that authentication remains
+   * strictly gated on authentication_accepted (impostors and warped probes
+   * are rejected, and uninformative stays FALSE for 64x80 press sensors). */
   for (guint i = 1; i <= 10; i++)
     {
       guint8 sample[64 * 80];
@@ -1007,6 +877,8 @@ test_two_tier_enrollment_gate (void)
   g_assert_no_error (error);
   g_assert_nonnull (print);
 
+  guint8 impostor[64 * 80];
+  fte3600_auth_test_image (impostor, 64, 80, FTE3600_AUTH_TEST_OTHER_SEED, 0);
   g_autoptr(Fte3600AuthProbe) impostor_probe =
     fte3600_auth_probe_new (&identity, impostor, sizeof impostor, 64, &error);
   g_assert_no_error (error);
@@ -1014,6 +886,7 @@ test_two_tier_enrollment_gate (void)
   g_assert_true (fte3600_auth_match (impostor_probe, print, &match, &error));
   g_assert_no_error (error);
   g_assert_false (match.matched);
+  g_assert_false (match.uninformative);
 
   g_autoptr(Fte3600AuthTemplate) clean_print = enroll (&identity, FTE3600_AUTH_TEST_SEED);
   guint8 warped[64 * 80];
@@ -1068,8 +941,6 @@ main (int argc, char **argv)
   g_test_add_func ("/auth/strip-coverage", test_strip_coverage);
   g_test_add_func ("/auth/codec", test_codec);
   g_test_add_func ("/auth/golden-0.3.0", test_golden_030);
-  g_test_add_func ("/auth/clahe-determinism-blank", test_clahe_determinism_and_blank_guard);
-  g_test_add_func ("/auth/clahe-low-contrast", test_clahe_low_contrast_extraction);
   g_test_add_func ("/auth/processing-version-rejected", test_processing_version_rejected);
   g_test_add_func ("/auth/two-tier-enrollment", test_two_tier_enrollment_gate);
   g_test_add_func ("/auth/feature-multisets", test_feature_multisets);

@@ -3,7 +3,6 @@
  * This is personal test authentication, without population FAR/FRR claims.
  */
 #include "fte3600_auth.h"
-#include "fte3600_auth_preprocess.h"
 /* The independent device API and imported sensor enum both name UNKNOWN.
  * Keep their enum tags/types separate without editing the pinned header. */
 #define FTE3600_SENSOR_UNKNOWN SAM7_FTE3600_SENSOR_UNKNOWN
@@ -167,17 +166,11 @@ extract (const Fte3600AuthIdentity *identity, const guint8 *pixels, gsize length
   const Fte3600MatchProfile *profile = profile_for (identity);
   if (!profile)
     return fail (error, FTE3600_AUTH_UNSUPPORTED, "Unsupported exact capture profile");
-  const gsize packed_size = (gsize) identity->width * identity->height;
-  g_autofree guint8 *preprocessed = g_malloc (packed_size);
-  if (!fte3600_auth_preprocess_clahe (pixels, length, stride,
-                                      identity->width, identity->height, preprocessed))
-    {
-      explicit_bzero (preprocessed, packed_size);
-      return fail (error, FTE3600_AUTH_INVALID_ARGUMENT, "Invalid capture extent or row stride");
-    }
-  FpiBriskImage image = { preprocessed, packed_size, identity->width, identity->height, identity->width };
+  /* sam7-brisk already performs a single noise-floor-regularized 13x13 LCN pass.
+   * Do not add an external contrast pass before extraction (double-LCN amplifies
+   * capacitive sensor noise on real FW9369 captures). */
+  FpiBriskImage image = { pixels, length, identity->width, identity->height, stride };
   const Fte3600BriskStatus status = fpi_fte3600_brisk_extract_for_profile (profile, &image, features);
-  explicit_bzero (preprocessed, packed_size);
   if (cancelled (cancel, cancel_data, error))
     return FALSE;
   if (status == FPI_BRISK_INVALID_ARGUMENT)
@@ -328,37 +321,30 @@ describe_closest (const Fte3600AuthTemplate *print, const Fte3600BriskFeatureSet
                           r->translate_x, r->translate_y, r->angle);
 }
 
-/* Strip sensors (40 px wide and narrower) image about 4 mm of finger per
- * touch, so two honest touches of one finger usually share no skin at all:
- * on a 40x196 array, real touch pairs produce 1..8 mutual features unless
- * they land on the same band, and then 25..50. Chaining every new sample to
- * an already accepted one rejects exactly the touches that would widen the
- * template, and the finished template then covers one band and fails most
- * later presentations. For those profiles enrollment instead collects
- * distinct samples that each pass the extractor's own quality policy; the
- * matcher's acceptance policy for verification is unchanged. */
+/* Strip sensors (width <= 40) only image one narrow band per touch, so a
+ * non-overlapping verification touch carries no evidence for or against the
+ * finger. Keep the uninformative-touch hint scoped to strip sensors. */
 static gboolean
-coverage_enrollment (const Fte3600MatchProfile *profile)
+strip_sensor (const Fte3600MatchProfile *profile)
 {
   return profile && profile->width <= 40;
 }
 
-/* Small press sensors (e.g. 56x56, 64x80, 64x128) have limited skin area, so
- * legitimate shifted/edge touches during 12-stage enrollment can miss one of
- * the strict spatial/ratio verification thresholds while still forming a clear
- * rigid-body geometric match. Verification/identification remain strictly on
- * authentication_accepted with zero relaxation. */
+/* Strip sensors (width <= 40) and small press arrays (e.g. 64x80 = 5120 px,
+ * 56x56 = 3136 px — smaller in total pixel area than a 40x196 strip) image
+ * only a small fraction of a fingertip per touch. Chaining every new sample
+ * to an already accepted one rejects exactly the shifted/edge touches that
+ * widen the 12-sample template, causing repeated enroll-retry-scan stalls and
+ * leaving the finished template concentrated on one tiny spot. For these
+ * profiles enrollment collects distinct samples that each pass the extractor's
+ * own strict spatial quality self-check; verification and identification
+ * remain unchanged on the strict authentication_accepted policy. */
 static gboolean
-small_press_enrollment_consistent (const Fte3600MatchProfile     *profile,
-                                   const Fte3600BriskMatchResult *r)
+coverage_enrollment (const Fte3600MatchProfile *profile)
 {
-  return profile && profile->width > 40 && profile->width <= 64 &&
-         r->mutual_matches >= 6u &&
-         r->inliers >= 4u &&
-         r->competing_inliers < r->inliers &&
-         r->inlier_ratio >= 0.14 &&
-         r->rms_error < 1.85 &&
-         r->mean_hamming <= 68.0;
+  return profile &&
+         (profile->width <= 40u ||
+          (profile->width <= 64u && (gsize) profile->width * profile->height <= 64u * 80u));
 }
 
 static gboolean
@@ -382,9 +368,7 @@ consistent (const Fte3600AuthTemplate *print, const Fte3600BriskFeatureSet *samp
         fpi_fte3600_brisk_match_for_profile (profile, sample, &print->samples[i], &candidate.result);
       if (cancelled (cancel, cancel_data, error))
         return FALSE;
-      if (candidate.status == FPI_BRISK_OK &&
-          (candidate.result.authentication_accepted ||
-           small_press_enrollment_consistent (profile, &candidate.result)))
+      if (candidate.status == FPI_BRISK_OK && candidate.result.authentication_accepted)
         {
           *accepted = TRUE;
           return TRUE;
@@ -505,7 +489,7 @@ fte3600_auth_match_full (const Fte3600AuthProbe *probe, const Fte3600AuthTemplat
         best = candidate;
     }
   best.mutual_matches = mutual;
-  best.uninformative = !best.matched && coverage_enrollment (profile) &&
+  best.uninformative = !best.matched && strip_sensor (profile) &&
                        mutual < FTE3600_AUTH_OVERLAP_MUTUAL;
   *result = best;
   return TRUE;

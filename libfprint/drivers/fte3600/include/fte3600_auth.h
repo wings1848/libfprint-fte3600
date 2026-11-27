@@ -8,7 +8,7 @@
 G_BEGIN_DECLS
 
 #define FTE3600_AUTH_ENROLL_SAMPLES 12u
-#define FTE3600_AUTH_PROCESSING_VERSION 0x1002u
+#define FTE3600_AUTH_PROCESSING_VERSION 0x1003u
 #define FTE3600_AUTH_CODEC_VERSION 1u
 #define FTE3600_AUTH_MAX_TEMPLATE_BYTES 96000u
 /* Fewest descriptor correspondences against any enrolled sample before a

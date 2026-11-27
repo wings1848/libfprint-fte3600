@@ -31,6 +31,7 @@ struct _FpiDeviceFte3600
   gboolean                      suspending;
   gboolean                      suspended;
   gboolean                      needs_release;
+  gboolean                      cooldown_before_reopen;
   guint                         overlap_retries; /* Uninformative touches since the last decisive result. */
   guint                         recovery_retries; /* Consecutive recoverable session losses. */
   GHashTable                   *template_cache; /* Worker-owned; immutable values, exact byte keys. */
@@ -280,6 +281,7 @@ worker (GTask *task, gpointer source, gpointer task_data, GCancellable *cancel)
         error = runtime_error (&diag);
       self->runtime = NULL;
       self->needs_release = FALSE;
+      self->cooldown_before_reopen = FALSE;
       self->overlap_retries = 0;
       self->recovery_retries = 0;
       goto out;
@@ -292,6 +294,16 @@ worker (GTask *task, gpointer source, gpointer task_data, GCancellable *cancel)
                                                     .fast_open = work->action == FPI_DEVICE_ACTION_OPEN };
       struct fte3600_device_status status;
       Fte3600AuthIdentity opened_identity = {0};
+
+      if (self->cooldown_before_reopen)
+        {
+          self->cooldown_before_reopen = FALSE;
+          if (!cancellable_sleep_ms (cancel, 1000))
+            {
+              g_cancellable_set_error_if_cancelled (cancel, &error);
+              goto out;
+            }
+        }
 
       /* One clean retry for a calibration that failed because the sensor was
        * already covered; see recoverable_session(). */
@@ -367,6 +379,8 @@ opened:
            * FT9368's contact-only timeout can keep waiting on this owner. */
           hardware_failed = self->identity.backend_model == 0x9369 ||
                             self->identity.backend_model == 0x9769;
+          if (hardware_failed)
+            self->cooldown_before_reopen = TRUE;
           error = fpi_device_retry_new_msg (FP_DEVICE_RETRY_REMOVE_FINGER,
                                             "Lift your finger from the sensor");
           goto out;

@@ -29,7 +29,6 @@ fte3600_sources = files(
     'recovery.c',
     'linux_firmware.c',
     'auth.c',
-    'auth_preprocess.c',
     'auth_profiles.c',
     'sam7-brisk/libfprint/matchers/brisk/brisk.c',
     'sam7-brisk/libfprint/drivers/fte3600-brisk.c',

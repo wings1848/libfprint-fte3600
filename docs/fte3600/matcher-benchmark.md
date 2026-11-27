@@ -125,11 +125,18 @@ Docker container (`python:3.12-slim` + `opencv-python-headless<5` + compiled
 
 ### Takeaways
 
-- **Zero-dependency pure-C driver (`CLAHE+BRISK`, 12 samples)**: Compared against
-  the 8-sample `BRISK-baseline`, adding 2D CLAHE preprocessing and expanding the
-  enrolled gallery to 12 samples cuts pairwise EER from `32.16%` to `18.99%`,
-  lifts 0%-FAR gallery Gate TAR from `67.50%` to `77.50%` (`+10.0 pp`) with
-  `0.00%` FAR, and raises enrollment touch acceptance from `80.00%` to `89.89%`.
+- **Hardware validation finding (why the production driver keeps single-pass LCN)**:
+  Although stacking an external 2D CLAHE pass ahead of `sam7-brisk` improved
+  metrics on clean synthetic ridges (`EER 32.16% -> 18.99%`), live testing on a
+  physical GPD Pocket 3 (`FW9369`, `64x80`) showed that external CLAHE combined
+  with `sam7-brisk`'s built-in 13×13 Local Contrast Normalization creates a
+  double-LCN pass that amplifies real capacitive sensor floor noise into
+  109–151 unstable keypoints (`mutual 0`). The production driver therefore
+  keeps `sam7-brisk`'s native single-pass LCN unchanged, expands the gallery to
+  12 samples, and enables coverage enrollment for `<= 64x80` small press arrays
+  (confirmed on real `FW9369` hardware: 12/12 zero-retry enrollment in ~13 s,
+  strict verification unchanged with `inliers 9–11`, `hamming 20.0–22.2`,
+  `rms 0.32–0.37` on matches).
 - **Future matcher direction (`CLAHE+AKAZE` vs `CLAHE+SIGFM`)**: At calibrated
   `FAR=0%` ROC operating points, `CLAHE+AKAZE` reaches `100.00%` gallery TAR
   (`4.84%` pairwise EER) with `2.062 ms` extraction time—faster than both BRISK
