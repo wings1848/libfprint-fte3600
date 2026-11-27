@@ -158,11 +158,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "==> Authenticating sudo (used ONLY to verify hardware pair & run temporary fprintd)..."
+echo "==> Authenticating sudo (used ONLY to start/stop temporary local fprintd)..."
 sudo -v
-
-echo "==> Validating live SPI/GPIO/UIO hardware pair..."
-sudo python3 "$REPO_DIR/scripts/fte3600-pair.py"
 
 if systemctl is-active --quiet fprintd.service 2>/dev/null; then
   WAS_ACTIVE=1
