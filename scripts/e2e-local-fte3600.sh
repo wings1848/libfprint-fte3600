@@ -149,9 +149,44 @@ chmod 600 "$FPRINTD_LOG" "$PID_FILE" "$STATE_FILE"
 FPRINTD_PID=""
 WAS_ACTIVE=0
 
+SUMMARY_FILE="/tmp/fte3600-e2e-last-summary.txt"
+SUMMARY_WRITTEN=0
+
+write_summary() {
+  if [ "$SUMMARY_WRITTEN" -eq 1 ]; then
+    return
+  fi
+  SUMMARY_WRITTEN=1
+  {
+    echo "=== Local E2E Summary ($(date -Iseconds)) ==="
+    echo "Library: $LOCAL_LIB_SO"
+    echo "Finger: $FINGER | Rounds: $ROUNDS | GUI: $GUI_MODE"
+    echo ""
+    echo "=== Session Telemetry Report ==="
+    if [ -s "$STATE_FILE" ]; then
+      PYTHONPATH="$REPO_DIR/toolkit/src" python3 -m fte3600_toolkit report \
+        --mode all --state-file "$STATE_FILE" --lang "$LANG_OPT" || true
+    else
+      echo "(no completed rounds recorded)"
+    fi
+    echo ""
+    echo "=== Driver Debug Summary (BRISK & Capture Telemetry) ==="
+    if [ -s "$FPRINTD_LOG" ]; then
+      grep -E "Captured frame|Frame [0-9]+ (matched|no match)|Retry [0-9]+|Sensor profile|session|fast|strictly match|insufficient contrast|spatial evidence" "$FPRINTD_LOG" || \
+        echo "(no driver capture lines recorded)"
+    else
+      echo "(fprintd log empty)"
+    fi
+  } | tee "$SUMMARY_FILE"
+  chmod 600 "$SUMMARY_FILE" 2>/dev/null || true
+  echo ""
+  echo "==> Non-biometric summary saved to: $SUMMARY_FILE"
+}
+
 cleanup() {
   local rc=$?
   echo ""
+  write_summary || true
   echo "==> Cleaning up temporary local fprintd..."
   if [ -n "$FPRINTD_PID" ]; then
     sudo kill -TERM "$FPRINTD_PID" 2>/dev/null || true
@@ -264,20 +299,4 @@ fi
 
 echo ""
 echo "=== [4/4] Session Telemetry Report & Driver Summary ==="
-SUMMARY_FILE="/tmp/fte3600-e2e-last-summary.txt"
-{
-  echo "=== Local E2E Summary ($(date -Iseconds)) ==="
-  echo "Library: $LOCAL_LIB_SO"
-  echo "Finger: $FINGER | Rounds: $ROUNDS | GUI: $GUI_MODE"
-  echo ""
-  echo "=== Session Telemetry Report ==="
-  PYTHONPATH="$REPO_DIR/toolkit/src" python3 -m fte3600_toolkit report \
-    --mode all --state-file "$STATE_FILE" --lang "$LANG_OPT" || true
-  echo ""
-  echo "=== Driver Debug Summary (BRISK & Capture Telemetry) ==="
-  grep -E "Captured frame|Frame [0-9]+ (matched|no match)|Retry [0-9]+|Sensor profile|session|fast" "$FPRINTD_LOG" || \
-    echo "(no driver capture lines recorded)"
-} | tee "$SUMMARY_FILE"
-chmod 600 "$SUMMARY_FILE" 2>/dev/null || true
-echo ""
-echo "==> Non-biometric summary saved to: $SUMMARY_FILE"
+write_summary
