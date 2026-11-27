@@ -6,6 +6,7 @@
 | [hardware-gpd-pocket3.md](fte3600/hardware-gpd-pocket3.md) | GPD Pocket 3 (G1621-02 / N6000) hardware profile, CS polarity, and shared power button |
 | [architecture.md](fte3600/architecture.md) | see how the sensor, kernel glue, libfprint driver, fprintd, PAM, and toolkit fit together |
 | [toolkit.md](fte3600/toolkit.md) | use or extend the CLI and GTK4/libadwaita toolbox that enrolls prints and measures recognition |
+| [matcher-benchmark.md](fte3600/matcher-benchmark.md) | run the offline Docker multi-algorithm matcher benchmark (`BRISK` / `CLAHE+BRISK` / `AKAZE` / `SIGFM`) |
 | [troubleshooting.md](fte3600/troubleshooting.md) | diagnose "nothing happens", "not recognised", "device busy", power-button, or suspend errors |
 
 Repository policies live at the root: [CONTRIBUTING](../CONTRIBUTING.md),

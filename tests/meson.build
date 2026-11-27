@@ -524,7 +524,7 @@ if 'fte3600' in drivers
       link_with: fte3600_driver,
       # Syscall wrapper symbols intentionally have no public API declarations.
       c_args: ['-Wno-missing-prototypes', '-Wno-missing-declarations'],
-      override_options: ['c_std=gnu11'],
+      override_options: ['c_std=gnu11', 'b_lto=false'],
       link_args: fte3600_syscall_wrap,
       install: false)
     test('fte3600-linux-board', fte3600_board_test, timeout: 180)
@@ -537,7 +537,7 @@ if 'fte3600' in drivers
       c_args: ['-Wno-missing-prototypes', '-Wno-missing-declarations',
                '-fno-fast-math', '-ffp-contract=off',
                '-fexcess-precision=standard', '-frounding-math'],
-      override_options: ['c_std=gnu11'],
+      override_options: ['c_std=gnu11', 'b_lto=false'],
       link_args: fte3600_syscall_wrap,
       install: false)
     test('fte3600-linux-runtime', fte3600_linux_runtime_test, timeout: 180)
@@ -548,6 +548,7 @@ if 'fte3600' in drivers
       include_directories: fte3600_test_include,
       link_with: fte3600_driver,
       c_args: ['-Wno-missing-prototypes', '-Wno-missing-declarations'],
+      override_options: ['b_lto=false'],
       link_args: ['-Wl,--wrap=fte3600_linux_runtime_open,--wrap=fte3600_linux_runtime_get_status,--wrap=fte3600_linux_runtime_close'],
       install: false)
     test('fte3600-probe', fte3600_probe_test, timeout: 30)
@@ -562,7 +563,7 @@ if 'fte3600' in drivers
       c_args: ['-Wno-missing-prototypes', '-Wno-missing-declarations',
                '-fno-fast-math', '-ffp-contract=off',
                '-fexcess-precision=standard', '-frounding-math'],
-      override_options: ['c_std=gnu11'],
+      override_options: ['c_std=gnu11', 'b_lto=false'],
       link_args: fte3600_syscall_wrap + ['-Wl,--wrap=g_get_monotonic_time'],
       install: false)
     test('fte3600-fw9369-runtime', fte3600_runtime_test, timeout: 180)
@@ -575,6 +576,7 @@ if 'fte3600' in drivers
     dependencies: libfprint_dep,
     include_directories: include_directories('../libfprint'),
     c_args: ['-Wno-missing-prototypes', '-Wno-missing-declarations'],
+    override_options: ['b_lto=false'],
     link_args: ['-Wl,--wrap=fp_context_new,--wrap=fp_context_get_devices,--wrap=fp_device_get_driver,--wrap=fp_device_is_open,--wrap=fp_device_open_sync,--wrap=fp_device_close_sync'],
     install: false)
   test('fte3600-open-bench', fte3600_open_bench_test, timeout: 30)

@@ -46,15 +46,22 @@ fte3600_config.set_quoted('FTE3600_FIRMWARE_DIR', get_option('fte3600-firmware-d
 fte3600_config_header = configure_file(output: 'fte3600-build-config.h',
     configuration: fte3600_config)
 
+fte3600_driver_c_args = [
+    '-include', 'fte3600-build-config.h',
+    '-DFTE3600_ENABLE_PERSONAL_AUTH=1',
+    '-fno-fast-math', '-ffp-contract=off',
+    '-fexcess-precision=standard', '-frounding-math',
+]
+if get_option('b_lto') and cc.has_argument('-ffat-lto-objects')
+    fte3600_driver_c_args += ['-ffat-lto-objects']
+endif
+
 fte3600_driver = static_library('fprint-fte3600',
     sources: [fte3600_sources, fte3600_config_header],
     dependencies: deps,
     include_directories: include_directories('include', '.', '../..',
         'sam7-brisk/libfprint/drivers'),
-    c_args: ['-include', 'fte3600-build-config.h',
-             '-DFTE3600_ENABLE_PERSONAL_AUTH=1',
-             '-fno-fast-math', '-ffp-contract=off',
-             '-fexcess-precision=standard', '-frounding-math'],
+    c_args: fte3600_driver_c_args,
     install: false,
 )
 

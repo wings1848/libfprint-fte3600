@@ -486,10 +486,12 @@ def run_opencv_matcher(
         raise RuntimeError("OpenCV (cv2) is not available")
 
     if algo == "akaze":
-        detector = cv2.AKAZE_create(threshold=0.0004)
+        akaze_factory = getattr(cv2, "AKAZE_create", None) or cv2.AKAZE.create
+        detector = akaze_factory(threshold=0.0004)
         matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
     elif algo == "sift":
-        detector = cv2.SIFT_create(nfeatures=220, contrastThreshold=0.02, edgeThreshold=15)
+        sift_factory = getattr(cv2, "SIFT_create", None) or cv2.SIFT.create
+        detector = sift_factory(nfeatures=220, contrastThreshold=0.02, edgeThreshold=15)
         matcher = cv2.BFMatcher(cv2.NORM_L2)
     else:
         raise ValueError(f"Unknown OpenCV matcher: {algo}")

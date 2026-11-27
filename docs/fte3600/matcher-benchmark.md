@@ -87,26 +87,23 @@ temporary directory automatically and cleans it up on exit.
 
 ## Measured Results (Synthetic Ridge Stress Suite)
 
-Configuration: `python3 tools/fte3600-bench/bench.py --synthetic --brisk-only`
+Configuration: `docker run --rm fte3600-bench:latest --synthetic`
 (`10 fingers × 16 captures = 160 frames`, `seed=36002026`, `1,200 genuine pairs`,
 `11,520 impostor pairs`; captures `0..7` form the 8-sample gallery, `0..11` form
 the 12-sample gallery, and `12..15` are held-out verification probes).
 
-`BRISK-baseline` and `CLAHE+BRISK` rows below were measured directly on the host
-against the repository's `sam7-brisk` C core. `CLAHE+AKAZE` and
-`CLAHE+SIGFM(SIFT)` rows are marked *Pending Docker run* because the Docker
-daemon socket was unavailable inside the build sandbox; run
-`./tools/fte3600-bench/run-docker.sh` on a host with Docker enabled to populate
-all four matchers.
+All four matchers below were measured end-to-end inside the `fte3600-bench`
+Docker container (`python:3.12-slim` + `opencv-python-headless<5` + compiled
+`brisk_cli` linking the repository's real `sam7-brisk` C core):
 
 ### 1. Pairwise Verification ROC & Latency
 
 | Matcher | TAR @ FAR=0% | TAR @ FAR<=1% | EER | Gate TAR / FAR | Mean Match (ms) | Mean Extract (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `BRISK-baseline` | 34.58% | 41.08% | 32.16% | 32.75% / 0.00% | 0.472 | 15.304 |
-| `CLAHE+BRISK` | 38.92% | 47.67% | 18.99% | 36.83% / 0.00% | 0.651 | 18.401 |
-| `CLAHE+AKAZE` | *Pending Docker run* | *Pending Docker run* | *Pending Docker run* | *Pending Docker run* | *Pending* | *Pending* |
-| `CLAHE+SIGFM(SIFT)` | *Pending Docker run* | *Pending Docker run* | *Pending Docker run* | *Pending Docker run* | *Pending* | *Pending* |
+| `BRISK-baseline` | 34.58% | 41.08% | 32.16% | 32.75% / 0.00% | 0.429 | 15.184 |
+| `CLAHE+BRISK` | 38.92% | 47.67% | 18.99% | 36.83% / 0.00% | 0.594 | 17.491 |
+| `CLAHE+AKAZE` | 74.67% | 88.42% | 4.84% | 88.50% / 1.22% | 0.385 | 2.062 |
+| `CLAHE+SIGFM(SIFT)` | 79.58% | 94.67% | 3.58% | 96.92% / 4.49% | 0.626 | 7.113 |
 
 ### 2. Multi-Sample Template Gallery (8-Sample vs 12-Sample, TAR @ FAR=0%)
 
@@ -114,8 +111,8 @@ all four matchers.
 | --- | ---: | ---: | ---: | ---: |
 | `BRISK-baseline` | 72.50% | 72.50% | 67.50% / 0.00% | 70.00% / 0.00% |
 | `CLAHE+BRISK` | 77.50% | 80.00% | 75.00% / 0.00% | 77.50% / 0.00% |
-| `CLAHE+AKAZE` | *Pending Docker run* | *Pending Docker run* | *Pending* | *Pending* |
-| `CLAHE+SIGFM(SIFT)` | *Pending Docker run* | *Pending Docker run* | *Pending* | *Pending* |
+| `CLAHE+AKAZE` | 100.00% | 100.00% | 100.00% / 6.67% | 100.00% / 11.11% |
+| `CLAHE+SIGFM(SIFT)` | 95.00% | 97.50% | 100.00% / 23.06% | 100.00% / 34.44% |
 
 ### 3. Simulated Enrollment Stage Acceptance (8-Sample Target)
 
@@ -123,8 +120,22 @@ all four matchers.
 | --- | ---: | ---: | ---: | ---: |
 | `BRISK-baseline` | 80.00% | 100.00% | 80.00% | 100.00% |
 | `CLAHE+BRISK` | 89.89% | 100.00% | 89.89% | 100.00% |
-| `CLAHE+AKAZE` | *Pending Docker run* | *Pending* | *Pending* | *Pending* |
-| `CLAHE+SIGFM(SIFT)` | *Pending Docker run* | *Pending* | *Pending* | *Pending* |
+| `CLAHE+AKAZE` | 100.00% | 100.00% | 100.00% | 100.00% |
+| `CLAHE+SIGFM(SIFT)` | 100.00% | 100.00% | 100.00% | 100.00% |
+
+### Takeaways
+
+- **Zero-dependency pure-C driver (`CLAHE+BRISK`, 12 samples)**: Compared against
+  the 8-sample `BRISK-baseline`, adding 2D CLAHE preprocessing and expanding the
+  enrolled gallery to 12 samples cuts pairwise EER from `32.16%` to `18.99%`,
+  lifts 0%-FAR gallery Gate TAR from `67.50%` to `77.50%` (`+10.0 pp`) with
+  `0.00%` FAR, and raises enrollment touch acceptance from `80.00%` to `89.89%`.
+- **Future matcher direction (`CLAHE+AKAZE` vs `CLAHE+SIGFM`)**: At calibrated
+  `FAR=0%` ROC operating points, `CLAHE+AKAZE` reaches `100.00%` gallery TAR
+  (`4.84%` pairwise EER) with `2.062 ms` extraction time—faster than both BRISK
+  and SIFT. However, the uncalibrated fixed-threshold Gate columns (`6.67%`–`34.44%`
+  multi-template FAR) show why an optional OpenCV matcher must only be introduced
+  after threshold calibration on real physical `FTE3600_DUMP_DIR` captures.
 
 ## Scope & Interpretation Limits
 

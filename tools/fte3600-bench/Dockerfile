@@ -3,21 +3,20 @@
 # Build from repository root:
 #   docker build -f tools/fte3600-bench/Dockerfile -t fte3600-bench .
 
-FROM debian:bookworm-slim
+FROM python:3.12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     FTE3600_BRISK_CLI=/usr/local/bin/brisk_cli
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     gcc \
     libc6-dev \
     pkg-config \
     libglib2.0-dev \
-    python3 \
-    python3-numpy \
-    python3-opencv \
     && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir numpy 'opencv-python-headless<5'
 
 WORKDIR /opt/fte3600-bench
 
