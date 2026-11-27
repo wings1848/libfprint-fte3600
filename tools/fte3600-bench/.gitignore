@@ -1,0 +1,4 @@
+brisk_cli
+*.pgm
+*.o
+__pycache__/
