@@ -2,6 +2,8 @@ name: FTE3600
 
 on:
   push:
+    tags-ignore:
+      - 'arch-latest'
   pull_request:
   workflow_dispatch:
 
@@ -125,3 +127,103 @@ jobs:
               exit 1
             }
           done
+
+          rm -rf "$GITHUB_WORKSPACE/dist-arch"
+          mkdir -p "$GITHUB_WORKSPACE/dist-arch"
+          cp -a "$pkg_file" "$GITHUB_WORKSPACE/dist-arch/"
+          (
+            cd "$GITHUB_WORKSPACE/dist-arch"
+            sha256sum ./*.pkg.tar.zst | sed 's| \./| |' > SHA256SUMS
+          )
+          chmod -R a+rX "$GITHUB_WORKSPACE/dist-arch"
+      - name: Upload Arch Linux package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: dist-arch/
+          retention-days: 30
+          if-no-files-found: error
+
+  publish-arch-release:
+    name: Publish Arch Linux package release
+    needs: [fedora, ubuntu, arch-package]
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built Arch Linux package
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-package
+          path: dist-arch
+      - name: Publish Arch Linux package release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pkg_path=$(find dist-arch -maxdepth 1 -name 'libfprint-fte3600-git-*.pkg.tar.zst' | head -n 1)
+          test -n "$pkg_path"
+          short_sha=${GITHUB_SHA:0:7}
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            release_tag="$GITHUB_REF_NAME"
+            upload_name="libfprint-fte3600-${release_tag}-x86_64.pkg.tar.zst"
+            upload_path="dist-arch/${upload_name}"
+            cp -a "$pkg_path" "$upload_path"
+            (
+              cd dist-arch
+              sha256sum "$upload_name" > SHA256SUMS
+            )
+            release_title="libfprint-fte3600 ${release_tag}"
+          else
+            release_tag="arch-latest"
+            upload_name=$(basename "$pkg_path")
+            upload_path="$pkg_path"
+            release_title="Arch Linux Package (Latest main: ${short_sha})"
+          fi
+
+          sha_line=$(cat dist-arch/SHA256SUMS)
+
+          cat > release-notes.md <<EOF
+          Prebuilt Arch Linux / CachyOS package built by GitHub Actions from \`${short_sha}\`.
+
+          ### Package
+          - \`${upload_name}\`
+          - SHA256: \`${sha_line}\`
+
+          ### Quick Install
+          \`\`\`bash
+          # Via AUR prebuilt package (recommended):
+          paru -S libfprint-fte3600-bin fprintd
+
+          # Or directly from this GitHub Release:
+          curl -LO "https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}/${upload_name}"
+          sudo pacman -U "${upload_name}"
+
+          sudo fte3600-device-allow --install
+          sudo systemctl restart fprintd.service
+          fte3600-toolkit doctor
+          \`\`\`
+
+          > **Note**: This package replaces stock \`libfprint\` and includes DKMS sources for the \`fte3600\` kernel module (requires matching kernel headers, e.g. \`linux-headers\` or \`linux-cachyos-headers\`).
+          EOF
+
+          if gh release view "$release_tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [[ "$release_tag" == "arch-latest" ]]; then
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/arch-latest" \
+                -f "sha=${GITHUB_SHA}" -F force=true >/dev/null
+            fi
+            for old_asset in $(gh release view "$release_tag" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'); do
+              gh release delete-asset "$release_tag" "$old_asset" -R "$GITHUB_REPOSITORY" -y
+            done
+            gh release edit "$release_tag" -R "$GITHUB_REPOSITORY" \
+              --title "$release_title" \
+              --notes-file release-notes.md
+            gh release upload "$release_tag" "$upload_path" dist-arch/SHA256SUMS -R "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$release_tag" "$upload_path" dist-arch/SHA256SUMS -R "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$release_title" \
+              --notes-file release-notes.md
+          fi
