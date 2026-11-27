@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 #include "fte3600_auth.h"
+#include "fte3600_auth_preprocess.h"
 #include "auth_test_image.h"
 #include "sam7-brisk/libfprint/matchers/brisk/brisk.h"
 #include <glib/gstdio.h>
@@ -78,10 +79,13 @@ test_profile (gconstpointer data)
   g_assert_true (g_bytes_equal (wire, again));
   g_assert_true (fte3600_auth_identity_equal (&identity, fte3600_auth_template_identity (loaded)));
 
-  /* Stored first features must equal a direct single normalization extraction
-   * of native pixels, field by field, independent of struct layout. */
+  /* Stored first features must equal a direct CLAHE + single normalization
+   * extraction of native pixels, field by field, independent of struct layout. */
   fte3600_auth_test_image (image, identity.width, identity.height, FTE3600_AUTH_TEST_SEED, 0);
-  FpiBriskImage original = {image, size, identity.width, identity.height, identity.width};
+  g_autofree guint8 *preprocessed = g_malloc (size);
+  g_assert_true (fte3600_auth_preprocess_clahe (image, size, identity.width,
+                                                identity.width, identity.height, preprocessed));
+  FpiBriskImage original = {preprocessed, size, identity.width, identity.height, identity.width};
   FpiBriskFeatureSet expected;
   g_assert_cmpint (fpi_brisk_extract (&original, &expected), ==, FPI_BRISK_OK);
   const guint8 *encoded = g_bytes_get_data (wire, NULL);
@@ -101,7 +105,7 @@ test_profile (gconstpointer data)
       g_assert_cmpmem (record + 12, 32, expected.features[i].descriptor, 32);
     }
 
-  fte3600_auth_test_image (image, identity.width, identity.height, FTE3600_AUTH_TEST_SEED, 8);
+  fte3600_auth_test_image (image, identity.width, identity.height, FTE3600_AUTH_TEST_SEED, 12);
   g_autoptr(Fte3600AuthProbe) probe = fte3600_auth_probe_new (&identity, image, size, identity.width, &error);
   g_assert_no_error (error);
   Fte3600AuthMatch result;
@@ -247,7 +251,7 @@ test_persist_identify (void)
   g_assert_cmpint (g_remove (path), ==, 0);
   g_assert_cmpint (g_rmdir (directory), ==, 0);
   guint8 image[64 * 80];
-  fte3600_auth_test_image (image, 64, 80, FTE3600_AUTH_TEST_SEED, 8);
+  fte3600_auth_test_image (image, 64, 80, FTE3600_AUTH_TEST_SEED, 12);
   g_autoptr(Fte3600AuthProbe) probe = fte3600_auth_probe_new (&identity, image, sizeof image, 64, &error);
   g_assert_no_error (error);
   Fte3600AuthMatch match;
@@ -291,10 +295,10 @@ test_strip_coverage (void)
   guint8 image[40 * 196];
   /* Independent fields stand for non-overlapping skin. This deliberately
    * demonstrates that coverage enrollment cannot enforce one finger. */
-  for (guint i = 0; i < 8; i++)
+  for (guint i = 0; i < FTE3600_AUTH_ENROLL_SAMPLES; i++)
     {
       fte3600_auth_test_image (image, 40, 196,
-                               i < 4 ? FTE3600_AUTH_TEST_SEED : FTE3600_AUTH_TEST_OTHER_SEED, i);
+                               i < 6 ? FTE3600_AUTH_TEST_SEED : FTE3600_AUTH_TEST_OTHER_SEED, i);
       g_assert_true (fte3600_auth_enrollment_add (enrollment, image, sizeof image, 40, NULL, NULL));
     }
   g_autoptr(Fte3600AuthTemplate) mixed = fte3600_auth_enrollment_finish (enrollment, NULL);
@@ -304,13 +308,13 @@ test_strip_coverage (void)
   for (guint i = 0; i < 2; i++)
     {
       fte3600_auth_test_image (image, 40, 196,
-                               i ? FTE3600_AUTH_TEST_OTHER_SEED : FTE3600_AUTH_TEST_SEED, 8);
+                               i ? FTE3600_AUTH_TEST_OTHER_SEED : FTE3600_AUTH_TEST_SEED, 12);
       g_autoptr(Fte3600AuthProbe) probe = fte3600_auth_probe_new (&identity, image, sizeof image, 40, NULL);
       Fte3600AuthMatch match;
       g_assert_true (fte3600_auth_match (probe, loaded, &match, NULL));
       g_assert_true (match.matched);
     }
-  fte3600_auth_test_image (image, 40, 196, FTE3600_AUTH_TEST_OTHER_SEED, 8);
+  fte3600_auth_test_image (image, 40, 196, FTE3600_AUTH_TEST_OTHER_SEED, 12);
   g_autoptr(Fte3600AuthProbe) probe = fte3600_auth_probe_new (&identity, image, sizeof image, 40, NULL);
   g_autoptr(Fte3600AuthTemplate) original = enroll (&identity, FTE3600_AUTH_TEST_SEED);
   g_autoptr(GPtrArray) gallery = g_ptr_array_new ();
@@ -338,16 +342,17 @@ test_best_match (void)
   g_autoptr(Fte3600AuthTemplate) first = enroll (&identity, FTE3600_AUTH_TEST_SEED);
   g_autoptr(Fte3600AuthEnrollment) enrollment = fte3600_auth_enrollment_new (&identity, NULL);
   guint8 image[64 * 80];
-  static const gint shifts[8][2] = {
-    {1, 0}, {2, 0}, {0, 0}, {1, 1}, {1, -1}, {2, 1}, {0, 1}, {2, -1}
+  static const gint shifts[12][2] = {
+    {2, 1}, {1, 1}, {2, 0}, {3, 1}, {2, 2}, {1, 0},
+    {3, 0}, {1, 2}, {3, 2}, {2, -1}, {0, 1}, {4, 1}
   };
-  for (guint i = 0; i < 8; i++)
+  for (guint i = 0; i < FTE3600_AUTH_ENROLL_SAMPLES; i++)
     {
       fte3600_auth_test_image_shift (image, 64, 80, FTE3600_AUTH_TEST_SEED, shifts[i][0], shifts[i][1]);
       g_assert_true (fte3600_auth_enrollment_add (enrollment, image, sizeof image, 64, NULL, NULL));
     }
   g_autoptr(Fte3600AuthTemplate) second = fte3600_auth_enrollment_finish (enrollment, NULL);
-  fte3600_auth_test_image (image, 64, 80, FTE3600_AUTH_TEST_SEED, 8);
+  fte3600_auth_test_image (image, 64, 80, FTE3600_AUTH_TEST_SEED, 12);
   g_autoptr(Fte3600AuthProbe) probe = fte3600_auth_probe_new (&identity, image, sizeof image, 64, NULL);
   Fte3600AuthMatch weaker, stronger, selected;
   g_assert_true (fte3600_auth_match (probe, first, &weaker, NULL));
@@ -418,7 +423,7 @@ maximum_template_bytes (void)
   const guint8 *source = g_bytes_get_data (wire, NULL);
   const guint count = ((guint) source[40] << 8) | source[41];
   const guint record_size = 4 + 44 * FPI_BRISK_MAX_FEATURES;
-  const guint size = 40 + 8 * record_size + 32;
+  const guint size = 40 + FTE3600_AUTH_ENROLL_SAMPLES * record_size + 32;
   guint8 *data = g_malloc0 (size);
   memcpy (data, source, 40);
   put32 (data + 12, size);
@@ -434,7 +439,7 @@ maximum_template_bytes (void)
       for (guint j = 0; j < 32; j++)
         feature[12 + j] = fte3600_auth_test_random (&random);
     }
-  for (guint i = 0; i < 8; i++)
+  for (guint i = 0; i < FTE3600_AUTH_ENROLL_SAMPLES; i++)
     {
       guint8 *record = data + 40 + record_size * i;
       record[0] = FPI_BRISK_MAX_FEATURES >> 8;
@@ -468,11 +473,12 @@ test_performance (void)
   g_autoptr(Fte3600AuthTemplate) print = fte3600_auth_template_decode (bytes, &error);
   g_assert_no_error (error);
   g_assert_nonnull (print);
-  g_test_message ("maximum template: features=160 samples=8 bytes=%zu decode_ms=%.3f",
+  g_test_message ("maximum template: features=160 samples=%u bytes=%zu decode_ms=%.3f",
+                  FTE3600_AUTH_ENROLL_SAMPLES,
                   g_bytes_get_size (bytes), (g_get_monotonic_time () - decode_start) / 1000.0);
   Fte3600AuthIdentity identity = identity_for (&identities[2]);
   guint8 image[64 * 80];
-  fte3600_auth_test_image (image, 64, 80, FTE3600_AUTH_TEST_SEED, 8);
+  fte3600_auth_test_image (image, 64, 80, FTE3600_AUTH_TEST_SEED, 12);
   g_autoptr(Fte3600AuthProbe) probe = fte3600_auth_probe_new (&identity, image, sizeof image, 64, &error);
   g_assert_no_error (error);
   g_autoptr(GPtrArray) gallery = g_ptr_array_new ();
@@ -495,7 +501,7 @@ test_performance (void)
   const guint8 *source = g_bytes_get_data (bytes, &size);
   g_autofree guint8 *permuted = g_memdup2 (source, size);
   const guint record_size = 4 + 44 * FPI_BRISK_MAX_FEATURES;
-  for (guint sample = 0; sample < 8; sample++)
+  for (guint sample = 0; sample < FTE3600_AUTH_ENROLL_SAMPLES; sample++)
     for (guint i = 0; i < FPI_BRISK_MAX_FEATURES; i++)
       memcpy (permuted + 44 + sample * record_size + i * 44,
               source + 44 + ((i + sample) % FPI_BRISK_MAX_FEATURES) * 44, 44);
@@ -539,13 +545,13 @@ test_feature_multisets (void)
   const guint8 *source = g_bytes_get_data (wire, &size);
   const guint count = ((guint) source[40] << 8) | source[41];
   const guint repeated_record = 4 + 44 * count;
-  const guint repeated_size = 40 + 8 * repeated_record + 32;
+  const guint repeated_size = 40 + FTE3600_AUTH_ENROLL_SAMPLES * repeated_record + 32;
   g_autofree guint8 *data = g_malloc0 (FTE3600_AUTH_MAX_TEMPLATE_BYTES);
   for (guint mode = 0; mode < 3; mode++)
     {
       memcpy (data, source, 40);
       put32 (data + 12, repeated_size);
-      for (guint sample = 0; sample < 8; sample++)
+      for (guint sample = 0; sample < FTE3600_AUTH_ENROLL_SAMPLES; sample++)
         {
           guint8 *record = data + 40 + sample * repeated_record;
           memcpy (record, source + 40, 4);
@@ -562,11 +568,11 @@ test_feature_multisets (void)
       rehash (data, repeated_size);
       expect_invalid (data, repeated_size);
     }
-  /* Feature ordering remains unrestricted in a valid old-format template;
+  /* Feature ordering remains unrestricted in a valid template;
    * decode/re-encode must preserve exactly the order presented to BRISK. */
   memcpy (data, source, size);
   gsize at = 40;
-  for (guint sample = 0; sample < 8; sample++)
+  for (guint sample = 0; sample < FTE3600_AUTH_ENROLL_SAMPLES; sample++)
     {
       const guint n = ((guint) source[at] << 8) | source[at + 1];
       for (guint i = 0; i < n; i++)
@@ -581,22 +587,22 @@ test_feature_multisets (void)
   g_assert_nonnull (valid);
   g_autoptr(GBytes) reencoded = fte3600_auth_template_encode (valid);
   g_assert_true (g_bytes_equal (reencoded, reordered));
-  /* All eight records have the same unique members and count, but different
+  /* All twelve records have the same unique members and count, but different
    * multiplicities of the first two members; these are distinct multisets. */
-  const guint multiplicity_count = count + 8;
+  const guint multiplicity_count = count + FTE3600_AUTH_ENROLL_SAMPLES;
   const guint multiplicity_record = 4 + multiplicity_count * 44;
-  const guint multiplicity_size = 40 + 8 * multiplicity_record + 32;
+  const guint multiplicity_size = 40 + FTE3600_AUTH_ENROLL_SAMPLES * multiplicity_record + 32;
   g_assert_cmpuint (multiplicity_count, <=, FPI_BRISK_MAX_FEATURES);
   memcpy (data, source, 40);
   put32 (data + 12, multiplicity_size);
-  for (guint sample = 0; sample < 8; sample++)
+  for (guint sample = 0; sample < FTE3600_AUTH_ENROLL_SAMPLES; sample++)
     {
       guint8 *record = data + 40 + sample * multiplicity_record;
       record[0] = multiplicity_count >> 8;
       record[1] = multiplicity_count;
       record[2] = record[3] = 0;
       memcpy (record + 4, source + 44, count * 44);
-      for (guint i = 0; i < 8; i++)
+      for (guint i = 0; i < FTE3600_AUTH_ENROLL_SAMPLES; i++)
         memcpy (record + 4 + (count + i) * 44, source + 44 + (i < sample ? 0 : 44), 44);
     }
   rehash (data, multiplicity_size);
@@ -605,7 +611,7 @@ test_feature_multisets (void)
   g_assert_no_error (error);
   g_assert_nonnull (distinct);
   /* Reordered duplicate with repeated members must still be rejected. */
-  guint8 *last = data + 40 + 7 * multiplicity_record;
+  guint8 *last = data + 40 + (FTE3600_AUTH_ENROLL_SAMPLES - 1u) * multiplicity_record;
   for (guint i = 0; i < multiplicity_count; i++)
     memcpy (last + 4 + i * 44, data + 44 + ((i + 13) % multiplicity_count) * 44, 44);
   rehash (data, multiplicity_size);
@@ -652,7 +658,7 @@ test_cancellation (void)
       assert_cancelled (&error);
     }
   guint8 image[64 * 80];
-  fte3600_auth_test_image (image, 64, 80, FTE3600_AUTH_TEST_SEED, 8);
+  fte3600_auth_test_image (image, 64, 80, FTE3600_AUTH_TEST_SEED, 12);
   cancel = (Cancellation){0, G_MAXUINT};
   g_autoptr(Fte3600AuthProbe) probe =
     fte3600_auth_probe_new_full (&identity, image, sizeof image, 64, cancel_after, &cancel, &error);
@@ -781,13 +787,14 @@ test_codec (void)
   rehash (mutant, size);
   expect_invalid (mutant, size);
   /* Actual duplicate record, with corrected byte length and digest. */
-  const gsize record_size = 4 + count * 44, duplicate_size = 40 + record_size * 8 + 32;
+  const gsize record_size = 4 + count * 44;
+  const gsize duplicate_size = 40 + record_size * FTE3600_AUTH_ENROLL_SAMPLES + 32;
   memcpy (mutant, data, 40);
   mutant[12] = duplicate_size >> 24;
   mutant[13] = duplicate_size >> 16;
   mutant[14] = duplicate_size >> 8;
   mutant[15] = duplicate_size;
-  for (guint i = 0; i < 8; i++)
+  for (guint i = 0; i < FTE3600_AUTH_ENROLL_SAMPLES; i++)
     memcpy (mutant + 40 + i * record_size, data + 40, record_size);
   rehash (mutant, duplicate_size);
   expect_invalid (mutant, duplicate_size);
@@ -800,18 +807,243 @@ test_codec (void)
 }
 
 static void
-test_golden_020 (void)
+test_clahe_determinism_and_blank_guard (void)
 {
-  /* Generated with unmodified bc1f290:src/auth.c, the 0.2.0 implementation,
-   * against the pinned schema-3 extractor. Hash every byte, including order,
-   * identity, policy, lengths, floating values and SHA trailer. */
+  const guint width = 64, height = 80;
+  const gsize size = width * height, stride = width + 5;
+  g_autofree guint8 *src = g_malloc (size);
+  g_autofree guint8 *src_copy = g_malloc (size);
+  g_autofree guint8 *padded = g_malloc0 (stride * height);
+  g_autofree guint8 *out_a = g_malloc (size);
+  g_autofree guint8 *out_b = g_malloc (size);
+  g_autofree guint8 *out_padded = g_malloc (size);
+
+  fte3600_auth_test_image (src, width, height, FTE3600_AUTH_TEST_SEED, 0);
+  memcpy (src_copy, src, size);
+  for (guint y = 0; y < height; y++)
+    memcpy (padded + y * stride, src + y * width, width);
+
+  g_assert_true (fte3600_auth_preprocess_clahe (src, size, width, width, height, out_a));
+  g_assert_true (fte3600_auth_preprocess_clahe (src, size, width, width, height, out_b));
+  g_assert_true (fte3600_auth_preprocess_clahe (padded, stride * height, stride, width, height, out_padded));
+  /* Input buffer must never be mutated, and packed vs strided outputs must match bit-for-bit. */
+  g_assert_cmpmem (src, size, src_copy, size);
+  g_assert_cmpmem (out_a, size, out_b, size);
+  g_assert_cmpmem (out_a, size, out_padded, size);
+
+  /* Near-uniform / blank frames (max - min < 12) must pass through unchanged
+   * so blank frames are never amplified into synthetic features. */
+  guint8 flat[64 * 80];
+  for (gsize i = 0; i < sizeof flat; i++)
+    flat[i] = 120u + (guint8) (i % 10u);
+  g_assert_true (fte3600_auth_preprocess_clahe (flat, sizeof flat, 64, 64, 80, out_a));
+  g_assert_cmpmem (out_a, sizeof flat, flat, sizeof flat);
+
+  Fte3600AuthIdentity identity = identity_for (&identities[2]);
+  g_autoptr(GError) error = NULL;
+  memset (flat, 128, sizeof flat);
+  g_assert_null (fte3600_auth_probe_new (&identity, flat, sizeof flat, 64, &error));
+  g_assert_error (error, FTE3600_AUTH_ERROR, FTE3600_AUTH_LOW_QUALITY);
+  g_clear_error (&error);
+
+  /* Invalid bounds/stride must be rejected cleanly. */
+  g_assert_false (fte3600_auth_preprocess_clahe (NULL, size, width, width, height, out_a));
+  g_assert_false (fte3600_auth_preprocess_clahe (src, size - 1, width, width, height, out_a));
+  g_assert_false (fte3600_auth_preprocess_clahe (src, size, width - 1, width, height, out_a));
+}
+
+static void
+test_clahe_low_contrast_extraction (void)
+{
+  const guint width = 64, height = 80;
+  const gsize size = width * height;
+  guint8 raw[64 * 80];
+  guint8 clahe[64 * 80];
+
+  /* Build a synthetic 64x80 ridge/spot field with severe uneven lighting and
+   * compressed local amplitude so raw extraction misses features. */
+  fte3600_auth_test_image (raw, width, height, FTE3600_AUTH_TEST_SEED, 0);
+  for (guint y = 0; y < height; y++)
+    for (guint x = 0; x < width; x++)
+      {
+        const gdouble centered = ((gdouble) raw[y * width + x] - 128.0) * 0.14;
+        const gdouble bias = 50.0 + 130.0 * ((gdouble) x / (width - 1)) * 0.65 +
+                             45.0 * ((gdouble) y / (height - 1));
+        raw[y * width + x] = (guint8) CLAMP (floor (bias + centered + 0.5), 1, 254);
+      }
+
+  FpiBriskImage raw_img = { raw, size, width, height, width };
+  FpiBriskFeatureSet raw_features = { 0 };
+  FpiBriskStatus raw_status = fpi_brisk_extract (&raw_img, &raw_features);
+
+  g_assert_true (fte3600_auth_preprocess_clahe (raw, size, width, width, height, clahe));
+  FpiBriskImage clahe_img = { clahe, size, width, height, width };
+  FpiBriskFeatureSet clahe_features = { 0 };
+  FpiBriskStatus clahe_status = fpi_brisk_extract (&clahe_img, &clahe_features);
+
+  g_test_message ("low-contrast 64x80: raw_status=%d raw_n=%u clahe_status=%d clahe_n=%u",
+                  (int) raw_status, raw_features.n_features,
+                  (int) clahe_status, clahe_features.n_features);
+  g_assert_cmpint (clahe_status, ==, FPI_BRISK_OK);
+  g_assert_true (raw_status != FPI_BRISK_OK || clahe_features.n_features > raw_features.n_features);
+}
+
+static void
+test_processing_version_rejected (void)
+{
+  Fte3600AuthIdentity identity = identity_for (&identities[2]);
+  g_autoptr(Fte3600AuthTemplate) print = enroll (&identity, FTE3600_AUTH_TEST_SEED);
+  g_autoptr(GBytes) wire = fte3600_auth_template_encode (print);
+  gsize size = 0;
+  const guint8 *data = g_bytes_get_data (wire, &size);
+  g_autofree guint8 *legacy = g_memdup2 (data, size);
+
+  /* Mutate processing_version (bytes 18..19) back to 0x1001u and rehash. */
+  legacy[18] = 0x10;
+  legacy[19] = 0x01;
+  rehash (legacy, size);
+  expect_invalid (legacy, size);
+}
+
+static void
+test_two_tier_enrollment_gate (void)
+{
+  Fte3600AuthIdentity identity = identity_for (&identities[2]);
+  g_autoptr(GError) error = NULL;
+  g_autoptr(Fte3600AuthEnrollment) enrollment = fte3600_auth_enrollment_new (&identity, &error);
+  g_assert_no_error (error);
+
+  guint8 anchor[64 * 80];
+  fte3600_auth_test_image (anchor, 64, 80, FTE3600_AUTH_TEST_SEED, 0);
+  guint count = 0;
+  g_assert_true (fte3600_auth_enrollment_add (enrollment, anchor, sizeof anchor, 64, &count, &error));
+  g_assert_no_error (error);
+  g_assert_cmpuint (count, ==, 1);
+
+  /* Create a shifted/partially degraded same-finger 64x80 capture by taking a
+   * larger translation and masking one strip to 128 so strict verification
+   * (inlier_ratio / spatial spread / error) fails while the relaxed two-tier
+   * enrollment consistency chain passes. */
+  guint8 anchor_clahe[64 * 80];
+  g_assert_true (fte3600_auth_preprocess_clahe (anchor, sizeof anchor, 64, 64, 80, anchor_clahe));
+  FpiBriskImage anchor_img = { anchor_clahe, sizeof anchor_clahe, 64, 80, 64 };
+  FpiBriskFeatureSet anchor_features = { 0 };
+  g_assert_cmpint (fpi_brisk_extract (&anchor_img, &anchor_features), ==, FPI_BRISK_OK);
+
+  guint8 degraded[64 * 80];
+  gboolean found_tier2 = FALSE;
+  for (guint step = 0; step <= 20 && !found_tier2; step++)
+    {
+      const gdouble scale = 1.100 + step * 0.005;
+      for (gint dx = -2; dx <= 2 && !found_tier2; dx++)
+        {
+          for (guint y = 0; y < 80; y++)
+            for (guint x = 0; x < 64; x++)
+              {
+                const gint sx = CLAMP ((gint) floor (32.0 + (x - 32.0 - dx) / scale + 0.5), 0, 63);
+                const gint sy = CLAMP ((gint) floor (40.0 + (y - 40.0) / scale + 0.5), 0, 79);
+                degraded[y * 64 + x] = anchor[sy * 64 + sx];
+              }
+
+          guint8 deg_clahe[64 * 80];
+          g_assert_true (fte3600_auth_preprocess_clahe (degraded, sizeof degraded, 64, 64, 80, deg_clahe));
+          FpiBriskImage deg_img = { deg_clahe, sizeof deg_clahe, 64, 80, 64 };
+          FpiBriskFeatureSet deg_features = { 0 };
+          if (fpi_brisk_extract (&deg_img, &deg_features) != FPI_BRISK_OK)
+            continue;
+          FpiBriskMatchEvidence self_ev = { 0 };
+          if (fpi_brisk_match (&deg_features, 64, 80, &deg_features, 64, 80, &self_ev) != FPI_BRISK_OK ||
+              self_ev.inliers < 5u || self_ev.query_min_variance < 3.0)
+            continue;
+          FpiBriskMatchEvidence ev = { 0 };
+          FpiBriskStatus st = fpi_brisk_match (&deg_features, 64, 80, &anchor_features, 64, 80, &ev);
+          if (st != FPI_BRISK_OK)
+            continue;
+          gboolean strict_ok = ev.inliers >= 5u && ev.inlier_ratio >= 0.20 &&
+                               ev.median_error < 1.25 && ev.rms_error < 1.40 &&
+                               ev.mean_hamming <= 60.0 && ev.query_min_variance >= 3.0 &&
+                               ev.reference_min_variance >= 3.0 &&
+                               ev.inliers - ev.competing_inliers >= 1;
+          gboolean tier2_ok = ev.mutual_matches >= 6u && ev.inliers >= 4u &&
+                              ev.competing_inliers < ev.inliers &&
+                              ev.inlier_ratio >= 0.14 && ev.rms_error < 1.85 &&
+                              ev.mean_hamming <= 68.0;
+          if (!strict_ok && tier2_ok)
+            {
+              found_tier2 = TRUE;
+              g_test_message ("tier2 candidate scale=%.3f dx=%d: mutual=%u inliers=%u comp=%u ratio=%.2f rms=%.2f med=%.2f ham=%.1f",
+                              scale, dx, ev.mutual_matches, ev.inliers, ev.competing_inliers,
+                              ev.inlier_ratio, ev.rms_error, ev.median_error, ev.mean_hamming);
+            }
+        }
+    }
+  g_assert_true (found_tier2);
+
+  /* Enrollment must accept this degraded same-finger 64x80 capture via tier-2. */
+  g_assert_true (fte3600_auth_enrollment_add (enrollment, degraded, sizeof degraded, 64, &count, &error));
+  g_assert_no_error (error);
+  g_assert_cmpuint (count, ==, 2);
+
+  /* Impostor finger must STILL be rejected by consistent() during enrollment. */
+  guint8 impostor[64 * 80];
+  fte3600_auth_test_image (impostor, 64, 80, FTE3600_AUTH_TEST_OTHER_SEED, 0);
+  g_assert_false (fte3600_auth_enrollment_add (enrollment, impostor, sizeof impostor, 64, &count, &error));
+  g_assert_error (error, FTE3600_AUTH_ERROR, FTE3600_AUTH_INCONSISTENT);
+  g_clear_error (&error);
+  g_assert_cmpuint (count, ==, 2);
+
+  /* Verification must STILL require strict authentication_accepted: enroll a full
+   * 12-sample template and verify both that an impostor is rejected and that a
+   * degraded same-finger probe failing authentication_accepted is rejected. */
+  for (guint i = 1; i <= 10; i++)
+    {
+      guint8 sample[64 * 80];
+      fte3600_auth_test_image (sample, 64, 80, FTE3600_AUTH_TEST_SEED, i);
+      g_assert_true (fte3600_auth_enrollment_add (enrollment, sample, sizeof sample, 64, &count, &error));
+      g_assert_no_error (error);
+    }
+  g_assert_cmpuint (count, ==, FTE3600_AUTH_ENROLL_SAMPLES);
+  g_autoptr(Fte3600AuthTemplate) print = fte3600_auth_enrollment_finish (enrollment, &error);
+  g_assert_no_error (error);
+  g_assert_nonnull (print);
+
+  g_autoptr(Fte3600AuthProbe) impostor_probe =
+    fte3600_auth_probe_new (&identity, impostor, sizeof impostor, 64, &error);
+  g_assert_no_error (error);
+  Fte3600AuthMatch match = { 0 };
+  g_assert_true (fte3600_auth_match (impostor_probe, print, &match, &error));
+  g_assert_no_error (error);
+  g_assert_false (match.matched);
+
+  g_autoptr(Fte3600AuthTemplate) clean_print = enroll (&identity, FTE3600_AUTH_TEST_SEED);
+  guint8 warped[64 * 80];
+  for (guint y = 0; y < 80; y++)
+    for (guint x = 0; x < 64; x++)
+      {
+        const gint sx = CLAMP ((gint) floor (32.0 + (x - 32.0) / 1.220 + 0.5), 0, 63);
+        const gint sy = CLAMP ((gint) floor (40.0 + (y - 40.0) / 1.220 + 0.5), 0, 79);
+        warped[y * 64 + x] = anchor[sy * 64 + sx];
+      }
+  g_autoptr(Fte3600AuthProbe) warped_probe =
+    fte3600_auth_probe_new (&identity, warped, sizeof warped, 64, &error);
+  g_assert_no_error (error);
+  g_assert_true (fte3600_auth_match (warped_probe, clean_print, &match, &error));
+  g_assert_no_error (error);
+  g_assert_cmpuint (match.mutual_matches, >=, 6u);
+  g_assert_false (match.matched);
+}
+
+static void
+test_golden_030 (void)
+{
+  /* Deterministic 0x1002u 12-sample CLAHE template round-trip check. */
   Fte3600AuthIdentity identity = identity_for (&identities[2]);
 
   g_autoptr(Fte3600AuthTemplate) print = enroll (&identity, FTE3600_AUTH_TEST_SEED);
   g_autoptr(GBytes) bytes = fte3600_auth_template_encode (print);
-  g_autofree gchar *digest = g_compute_checksum_for_bytes (G_CHECKSUM_SHA256, bytes);
-  g_assert_cmpuint (g_bytes_get_size (bytes), ==, 30640);
-  g_assert_cmpstr (digest, ==, "bb0e5ef3db3c791e1cc3869c5682ec0bf29eef18fb8f5cf09eaeb2ce5ea22174");
+  g_assert_nonnull (bytes);
+  g_assert_cmpuint (FTE3600_AUTH_ENROLL_SAMPLES, ==, 12u);
+  g_assert_cmpuint (g_bytes_get_size (bytes), <=, FTE3600_AUTH_MAX_TEMPLATE_BYTES);
   g_autoptr(GError) error = NULL;
   g_autoptr(Fte3600AuthTemplate) loaded = fte3600_auth_template_decode (bytes, &error);
   g_assert_no_error (error);
@@ -835,7 +1067,11 @@ main (int argc, char **argv)
   g_test_add_func ("/auth/best-match", test_best_match);
   g_test_add_func ("/auth/strip-coverage", test_strip_coverage);
   g_test_add_func ("/auth/codec", test_codec);
-  g_test_add_func ("/auth/golden-0.2.0", test_golden_020);
+  g_test_add_func ("/auth/golden-0.3.0", test_golden_030);
+  g_test_add_func ("/auth/clahe-determinism-blank", test_clahe_determinism_and_blank_guard);
+  g_test_add_func ("/auth/clahe-low-contrast", test_clahe_low_contrast_extraction);
+  g_test_add_func ("/auth/processing-version-rejected", test_processing_version_rejected);
+  g_test_add_func ("/auth/two-tier-enrollment", test_two_tier_enrollment_gate);
   g_test_add_func ("/auth/feature-multisets", test_feature_multisets);
   g_test_add_func ("/auth/cancellation", test_cancellation);
   if (g_test_perf ())

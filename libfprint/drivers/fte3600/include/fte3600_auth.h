@@ -7,10 +7,10 @@
 
 G_BEGIN_DECLS
 
-#define FTE3600_AUTH_ENROLL_SAMPLES 8u
-#define FTE3600_AUTH_PROCESSING_VERSION 0x1001u
+#define FTE3600_AUTH_ENROLL_SAMPLES 12u
+#define FTE3600_AUTH_PROCESSING_VERSION 0x1002u
 #define FTE3600_AUTH_CODEC_VERSION 1u
-#define FTE3600_AUTH_MAX_TEMPLATE_BYTES 60000u
+#define FTE3600_AUTH_MAX_TEMPLATE_BYTES 96000u
 /* Fewest descriptor correspondences against any enrolled sample before a
  * strip touch is considered to show enrolled skin at all. Non-overlapping
  * touches of the same finger produce 1-8; same-band touches 15-50. */

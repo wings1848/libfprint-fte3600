@@ -189,11 +189,11 @@ fte3600_linux_runtime_capture (struct fte3600_linux_runtime *runtime,
   frame->stride = runtime->status.width;
   frame->length = frame->stride * runtime->status.height;
   frame->pixels = g_malloc0 (frame->length);
-  guint sample = 8;
+  guint sample = 12;
   if (g_str_has_prefix (mode, "enroll"))
-    sample = runtime->sample++ % 8;
+    sample = runtime->sample++ % 12;
   if (g_str_equal (mode, "enroll-retry") && runtime->sample > 1)
-    sample = (runtime->sample - 2) % 8;
+    sample = (runtime->sample - 2) % 12;
   if (g_str_equal (mode, "duplicate"))
     sample = 0;
   if (!g_str_equal (mode, "blank"))

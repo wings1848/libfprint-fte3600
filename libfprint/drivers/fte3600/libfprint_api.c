@@ -160,12 +160,12 @@ test_release_observations (void)
       g_signal_connect (device, "notify::finger-status", G_CALLBACK (finger_changed), states);
       reset_trace ();
       g_autoptr(FpPrint) print = enroll (device, "enroll");
-      g_assert_cmpuint (trace_count ("capture-ok"), ==, 8);
-      g_assert_cmpuint (trace_count ("release-begin"), ==, 7);
-      g_assert_cmpuint (trace_count ("release-ok"), ==, supported ? 7 : 0);
-      g_assert_cmpuint (trace_count ("release-unsupported"), ==, supported ? 0 : 7);
-      g_assert_cmpuint (finger_count (states, FP_FINGER_STATUS_PRESENT), ==, supported ? 8 : 0);
-      g_assert_cmpuint (finger_count (states, FP_FINGER_STATUS_NEEDED), ==, supported ? 8 : 1);
+      g_assert_cmpuint (trace_count ("capture-ok"), ==, 12);
+      g_assert_cmpuint (trace_count ("release-begin"), ==, 11);
+      g_assert_cmpuint (trace_count ("release-ok"), ==, supported ? 11 : 0);
+      g_assert_cmpuint (trace_count ("release-unsupported"), ==, supported ? 0 : 11);
+      g_assert_cmpuint (finger_count (states, FP_FINGER_STATUS_PRESENT), ==, supported ? 12 : 0);
+      g_assert_cmpuint (finger_count (states, FP_FINGER_STATUS_NEEDED), ==, supported ? 12 : 1);
       /* NONE at action completion is framework housekeeping, not lift evidence. */
       g_assert_cmpuint (finger_count (states, FP_FINGER_STATUS_NONE), ==, 1);
       if (supported)
@@ -247,10 +247,10 @@ test_enroll_release_progress (void)
                                                   release_retry_progress, NULL, &error);
   g_assert_no_error (error);
   g_assert_nonnull (print);
-  g_assert_cmpuint (progress_count, ==, 8);
+  g_assert_cmpuint (progress_count, ==, 12);
   g_assert_cmpuint (retry_count, ==, 1);
   g_assert_cmpuint (trace_count ("release-timeout"), ==, 1);
-  g_assert_cmpuint (trace_count ("capture-ok"), ==, 8);
+  g_assert_cmpuint (trace_count ("capture-ok"), ==, 12);
   g_assert_cmpuint (trace_count ("open"), ==, 0);
   g_assert_cmpuint (trace_count ("close"), ==, 0);
   g_assert_true (fp_device_close_sync (device, NULL, &error));
@@ -328,10 +328,10 @@ test_fw9369_action_lifecycle (void)
                                                     fw9369_retry_progress, NULL, &error);
   g_assert_no_error (error);
   g_assert_nonnull (print);
-  g_assert_cmpuint (progress_count, ==, 8);
+  g_assert_cmpuint (progress_count, ==, 12);
   g_assert_cmpuint (retry_count, ==, 1);
-  g_assert_cmpuint (trace_count ("capture-ok"), ==, 9);
-  g_assert_cmpuint (trace_count ("release-ok"), ==, 8);
+  g_assert_cmpuint (trace_count ("capture-ok"), ==, 13);
+  g_assert_cmpuint (trace_count ("release-ok"), ==, 12);
   g_assert_cmpuint (trace_count ("open"), ==, 0);
 
   reset_trace ();
@@ -517,7 +517,7 @@ codec_u16 (const guint8 *data)
   return ((guint16) data[0] << 8) | data[1];
 }
 
-/* Permute the eight valid sample records without changing their features or
+/* Permute the twelve valid sample records without changing their features or
  * policy. This gives distinct, valid codec keys for eviction tests without
  * claiming 17 different physical fingers. */
 static FpPrint *
@@ -534,11 +534,11 @@ permuted_print (FpPrint *original, guint permutation)
   g_object_get (original, "fpi-data", &payload, NULL);
   const guint8 *source = g_variant_get_data (payload);
   gsize size = g_variant_get_size (payload);
-  gsize offsets[8], lengths[8], at = 40;
-  guint remaining[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+  gsize offsets[12], lengths[12], at = 40;
+  guint remaining[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
   g_assert_cmpuint (codec_u16 (source + 10), ==, 40);
-  g_assert_cmpuint (codec_u16 (source + 32), ==, 8);
-  for (guint i = 0; i < 8; i++)
+  g_assert_cmpuint (codec_u16 (source + 32), ==, 12);
+  for (guint i = 0; i < 12; i++)
     {
       offsets[i] = at;
       lengths[i] = 4 + codec_u16 (source + at) * codec_u16 (source + 36);
@@ -548,14 +548,14 @@ permuted_print (FpPrint *original, guint permutation)
   g_assert_cmpuint (at, ==, size - 32);
   guint8 *destination = g_memdup2 (source, size);
   at = 40;
-  for (guint i = 0; i < 8; i++)
+  for (guint i = 0; i < 12; i++)
     {
-      guint choice = permutation % (8 - i);
+      guint choice = permutation % (12 - i);
       guint sample = remaining[choice];
-      permutation /= 8 - i;
+      permutation /= 12 - i;
       memcpy (destination + at, source + offsets[sample], lengths[sample]);
       at += lengths[sample];
-      memmove (&remaining[choice], &remaining[choice + 1], (7 - i - choice) * sizeof (guint));
+      memmove (&remaining[choice], &remaining[choice + 1], (11 - i - choice) * sizeof (guint));
     }
   g_autoptr(GChecksum) checksum = g_checksum_new (G_CHECKSUM_SHA256);
   gsize digest_size = 32;
@@ -680,7 +680,7 @@ enroll (FpDevice *device, const gchar *scenario)
   FpPrint *print = fp_device_enroll_sync (device, input, NULL, progress, NULL, &error);
   g_assert_no_error (error);
   g_assert_nonnull (print);
-  g_assert_cmpuint (progress_count, ==, 8);
+  g_assert_cmpuint (progress_count, ==, 12);
   g_assert_false (fp_print_get_device_stored (print));
   return print;
 }

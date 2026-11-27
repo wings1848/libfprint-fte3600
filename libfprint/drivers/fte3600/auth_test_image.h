@@ -19,7 +19,7 @@ fte3600_auth_test_random (guint32 *state)
   return *state;
 }
 
-/* frames 0..7 are distinct enrollment translations; 8 is held out for query.
+/* frames 0..11 are distinct enrollment translations; 12 is held out for query.
 * Every dimension is native, and the seed defines a distinct source field. */
 static inline void
 fte3600_auth_test_image_shift (guint8 *pixels, guint width, guint height,
@@ -53,8 +53,9 @@ static inline void
 fte3600_auth_test_image (guint8 *pixels, guint width, guint height,
                          guint32 seed, guint frame)
 {
-  static const gint shifts[9][2] = {
-    {0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {-1, 1}, {1, -1}, {2, 1}
+  static const gint shifts[13][2] = {
+    {0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {-1, 1}, {1, -1},
+    {-1, -1}, {2, 0}, {-2, 0}, {0, 2}, {2, 1}
   };
 
   g_assert (frame < G_N_ELEMENTS (shifts));

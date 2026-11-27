@@ -3,6 +3,7 @@
  * This is personal test authentication, without population FAR/FRR claims.
  */
 #include "fte3600_auth.h"
+#include "fte3600_auth_preprocess.h"
 /* The independent device API and imported sensor enum both name UNKNOWN.
  * Keep their enum tags/types separate without editing the pinned header. */
 #define FTE3600_SENSOR_UNKNOWN SAM7_FTE3600_SENSOR_UNKNOWN
@@ -20,6 +21,9 @@ G_STATIC_ASSERT (sizeof (gfloat) == 4 && FLT_RADIX == 2 && FLT_MANT_DIG == 24 &&
 #define DIGEST_SIZE 32u
 #define FEATURE_SIZE (12u + FPI_BRISK_DESCRIPTOR_BYTES)
 #define PROFILE_VERSION 1u
+G_STATIC_ASSERT (HEADER_SIZE + DIGEST_SIZE +
+                 (gsize) FTE3600_AUTH_ENROLL_SAMPLES * (4u + FPI_BRISK_MAX_FEATURES * FEATURE_SIZE) <=
+                 FTE3600_AUTH_MAX_TEMPLATE_BYTES);
 static const guint8 magic[8] = { 'F', 'T', 'A', 'U', 'T', 'H', '0', '1' };
 static const guint8 query_magic[8] = { 'F', 'T', 'Q', 'U', 'E', 'R', 'Y', '1' };
 
@@ -163,8 +167,17 @@ extract (const Fte3600AuthIdentity *identity, const guint8 *pixels, gsize length
   const Fte3600MatchProfile *profile = profile_for (identity);
   if (!profile)
     return fail (error, FTE3600_AUTH_UNSUPPORTED, "Unsupported exact capture profile");
-  FpiBriskImage image = { pixels, length, identity->width, identity->height, stride };
+  const gsize packed_size = (gsize) identity->width * identity->height;
+  g_autofree guint8 *preprocessed = g_malloc (packed_size);
+  if (!fte3600_auth_preprocess_clahe (pixels, length, stride,
+                                      identity->width, identity->height, preprocessed))
+    {
+      explicit_bzero (preprocessed, packed_size);
+      return fail (error, FTE3600_AUTH_INVALID_ARGUMENT, "Invalid capture extent or row stride");
+    }
+  FpiBriskImage image = { preprocessed, packed_size, identity->width, identity->height, identity->width };
   const Fte3600BriskStatus status = fpi_fte3600_brisk_extract_for_profile (profile, &image, features);
+  explicit_bzero (preprocessed, packed_size);
   if (cancelled (cancel, cancel_data, error))
     return FALSE;
   if (status == FPI_BRISK_INVALID_ARGUMENT)
@@ -330,6 +343,24 @@ coverage_enrollment (const Fte3600MatchProfile *profile)
   return profile && profile->width <= 40;
 }
 
+/* Small press sensors (e.g. 56x56, 64x80, 64x128) have limited skin area, so
+ * legitimate shifted/edge touches during 12-stage enrollment can miss one of
+ * the strict spatial/ratio verification thresholds while still forming a clear
+ * rigid-body geometric match. Verification/identification remain strictly on
+ * authentication_accepted with zero relaxation. */
+static gboolean
+small_press_enrollment_consistent (const Fte3600MatchProfile     *profile,
+                                   const Fte3600BriskMatchResult *r)
+{
+  return profile && profile->width > 40 && profile->width <= 64 &&
+         r->mutual_matches >= 6u &&
+         r->inliers >= 4u &&
+         r->competing_inliers < r->inliers &&
+         r->inlier_ratio >= 0.14 &&
+         r->rms_error < 1.85 &&
+         r->mean_hamming <= 68.0;
+}
+
 static gboolean
 consistent (const Fte3600AuthTemplate *print, const Fte3600BriskFeatureSet *sample,
             guint count, gboolean *accepted, ClosestComparison *closest,
@@ -351,7 +382,9 @@ consistent (const Fte3600AuthTemplate *print, const Fte3600BriskFeatureSet *samp
         fpi_fte3600_brisk_match_for_profile (profile, sample, &print->samples[i], &candidate.result);
       if (cancelled (cancel, cancel_data, error))
         return FALSE;
-      if (candidate.status == FPI_BRISK_OK && candidate.result.authentication_accepted)
+      if (candidate.status == FPI_BRISK_OK &&
+          (candidate.result.authentication_accepted ||
+           small_press_enrollment_consistent (profile, &candidate.result)))
         {
           *accepted = TRUE;
           return TRUE;
@@ -410,7 +443,7 @@ fte3600_auth_enrollment_finish (const Fte3600AuthEnrollment *enrollment, GError 
 {
   if (!enrollment || enrollment->count != FTE3600_AUTH_ENROLL_SAMPLES)
     {
-      fail (error, FTE3600_AUTH_INCOMPLETE, "Enrollment requires eight accepted distinct captures");
+      fail (error, FTE3600_AUTH_INCOMPLETE, "Enrollment requires twelve accepted distinct captures");
       return NULL;
     }
   Fte3600AuthTemplate *print = g_new (Fte3600AuthTemplate, 1);
