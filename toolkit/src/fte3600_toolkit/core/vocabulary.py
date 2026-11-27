@@ -87,7 +87,7 @@ _MESSAGES: dict[str, dict[str, tuple[str, str, str, bool]]] = {
         "enroll-stage-passed": (
             "stage",
             "Sample accepted",
-            "Lift your finger completely, then press again with a slight angle shift.",
+            "Lift completely, keep the same finger angle, and shift only 1-2 mm (~70% overlap) for the next press.",
             False,
         ),
         "enroll-completed": (
@@ -99,13 +99,13 @@ _MESSAGES: dict[str, dict[str, tuple[str, str, str, bool]]] = {
         "enroll-retry-scan": (
             "retry",
             "Sample rejected, try again",
-            "Lift fully, re-centre, and press firmly.",
+            "Lift fully, keep the same finger angle, re-centre (~70% overlap), and press firmly.",
             False,
         ),
         "enroll-remove-and-retry": (
             "retry",
             "Duplicate or still touching",
-            "Lift your finger completely and shift slightly before pressing again.",
+            "Lift completely, keep the same finger angle, and shift 1-2 mm (~70% overlap) before pressing again.",
             False,
         ),
         "enroll-finger-not-centered": (
@@ -209,7 +209,7 @@ _MESSAGES: dict[str, dict[str, tuple[str, str, str, bool]]] = {
         "enroll-stage-passed": (
             "stage",
             "样本已通过",
-            "请完全抬起手指，微调位置后再次按实。",
+            "请完全抬起手指，保持相同角度，仅平移 1-2 毫米（保留约 70% 重叠）后再次按实。",
             False,
         ),
         "enroll-completed": (
@@ -221,13 +221,13 @@ _MESSAGES: dict[str, dict[str, tuple[str, str, str, bool]]] = {
         "enroll-retry-scan": (
             "retry",
             "样本未通过，请再按一次",
-            "请完全抬起手指、对准中心并按实。",
+            "请完全抬起手指，保持相同角度并居中覆盖传感器（保留约 70% 重叠），再按实重试。",
             False,
         ),
         "enroll-remove-and-retry": (
             "retry",
             "重复样本或未抬起手指",
-            "请完全抬起手指并稍微调整角度后再按。",
+            "请完全抬起手指，保持相同角度并平移 1-2 毫米（保留约 70% 重叠）后再按。",
             False,
         ),
         "enroll-finger-not-centered": (
@@ -289,7 +289,7 @@ UI_STRINGS: dict[str, dict[str, str]] = {
         "ready_enroll": "Press now to capture sample {next_stage} of {total_stages}",
         "capturing": "Reading… keep still",
         "early_press_hint": "Sensor was still waking up — wait for the prompt and press again",
-        "stage_progress": "Sample {stage} of {total_stages} accepted — lift and press again",
+        "stage_progress": "Sample {stage} of {total_stages} accepted — lift, keep angle, shift 1-2 mm (~70% overlap)",
         "tab_status": "Status",
         "tab_enroll": "Enroll",
         "tab_verify": "Test",
@@ -307,7 +307,7 @@ UI_STRINGS: dict[str, dict[str, str]] = {
         "ready_enroll": "请按压传感器录入第 {next_stage}/{total_stages} 个样本",
         "capturing": "正在读取… 请保持不动",
         "early_press_hint": "传感器仍在唤醒中 — 请等待就绪提示后再按",
-        "stage_progress": "已通过第 {stage}/{total_stages} 个样本 — 请抬起手指再按一次",
+        "stage_progress": "已通过第 {stage}/{total_stages} 个样本 — 请抬起，保持角度平移 1-2 毫米（约 70% 重叠）",
         "tab_status": "状态",
         "tab_enroll": "录入",
         "tab_verify": "识别测试",

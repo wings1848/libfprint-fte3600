@@ -1,10 +1,10 @@
 # Maintainer: FTE3600 Linux contributors
 
-pkgname=libfprint-fte3600-personal-git
+pkgname=libfprint-fte3600-git
 # makepkg replaces this bootstrap value with pkgver() from the committed HEAD.
 pkgver=1.94.100.r9
 pkgrel=1
-pkgdesc='libfprint with FTE3600 SPI fingerprint support and DKMS resource module'
+pkgdesc='libfprint with FTE3600 SPI fingerprint support, DKMS glue, and toolkit'
 arch=(x86_64)
 url='https://github.com/wings1848/libfprint-fte3600'
 license=(LGPL-2.1-or-later GPL-2.0-only MIT)
@@ -20,9 +20,9 @@ optdepends=(
   'libpulse: audio cues via paplay'
 )
 makedepends=(cairo git glib2-devel gobject-introspection meson ninja python python-build python-installer python-setuptools)
-checkdepends=(umockdev dbus)
+checkdepends=(umockdev dbus desktop-file-utils)
 provides=("libfprint=$pkgver" 'libfprint-2.so=2-64')
-conflicts=(libfprint)
+conflicts=(libfprint libfprint-fte3600-personal-git)
 install=fte3600.install
 # Meson enables LTO for production and disables it for linker-wrapped tests.
 # Do not inject a second -flto through makepkg's global compiler flags.
@@ -77,6 +77,7 @@ check() {
     -s "$srcdir/libfprint/toolkit/tests" -p 'test_core_unit.py' -v
   dbus-run-session -- python -W error::ResourceWarning -W error::RuntimeWarning -m unittest discover \
     -s "$srcdir/libfprint/toolkit/tests" -p 'test_dbus_e2e.py' -v
+  desktop-file-validate "$srcdir/libfprint/toolkit/data/org.freedesktop.libfprint.Fte3600Toolkit.desktop"
 }
 
 package() {

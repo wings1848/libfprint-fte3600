@@ -35,6 +35,8 @@ Use the [hardware tool](docs/fte3600/tools.md) to identify a sensor and collect 
 
 ## Quick Start
 
+On Arch Linux, install `libfprint-fte3600-git` from the AUR (`paru -S libfprint-fte3600-git fprintd`; see [Arch / NixOS packaging](packaging/README.md)). On other distributions, build and install from source:
+
 ```sh
 # 1. Install kernel glue & libfprint driver (see docs/fte3600/install.md or packaging/README.md)
 sudo ./scripts/setup-fte3600.sh install-kernel

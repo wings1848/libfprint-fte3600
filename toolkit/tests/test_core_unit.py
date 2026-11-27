@@ -25,6 +25,7 @@ from fte3600_toolkit.core import (  # noqa: E402
     run_enroll,
     run_verify_rounds,
     summarize_records,
+    ui_text,
 )
 
 
@@ -146,6 +147,28 @@ class VocabularyTests(unittest.TestCase):
         self.assertEqual(resolve_language("zh"), "zh")
         self.assertEqual(resolve_language("fr"), "en")
 
+    def test_64x80_enroll_guidance_keeps_angle_and_overlap(self) -> None:
+        for code in ("enroll-stage-passed", "enroll-retry-scan", "enroll-remove-and-retry"):
+            en = explain_result(code, "en")
+            self.assertIn("same finger angle", en.guidance.lower())
+            self.assertIn("70% overlap", en.guidance)
+            self.assertNotIn("angle shift", en.guidance.lower())
+
+            zh = explain_result(code, "zh")
+            self.assertIn("保持相同角度", zh.guidance)
+            self.assertIn("70%", zh.guidance)
+            self.assertNotIn("调整角度", zh.guidance)
+
+        stage_en = ui_text("stage_progress", "en", stage=2, total_stages=9)
+        self.assertIn("2 of 9", stage_en)
+        self.assertIn("keep angle", stage_en)
+        self.assertIn("70% overlap", stage_en)
+
+        stage_zh = ui_text("stage_progress", "zh", stage=2, total_stages=9)
+        self.assertIn("2/9", stage_zh)
+        self.assertIn("保持角度", stage_zh)
+        self.assertIn("70%", stage_zh)
+
 
 class StoreTests(unittest.TestCase):
     def test_append_load_and_summary_arithmetic(self) -> None:
@@ -203,25 +226,37 @@ class PowerAndDoctorTests(unittest.TestCase):
             )
             self.assertFalse(inspect_powerdevil_config(cfg).may_trigger_power_menu)
 
-    def test_doctor_on_synthetic_sysfs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            sysfs = root / "sys"
-            dev = root / "dev"
-            (sysfs / "bus/acpi/devices/FTE3600:00").mkdir(parents=True)
-            (sysfs / "bus/acpi/devices/FTE3600:00/status").write_text("15\n")
+    def _make_synthetic_sysfs(
+        self,
+        root: Path,
+        *,
+        glue_status: str | None = "ready",
+        with_dev_nodes: bool = True,
+    ) -> tuple[Path, Path]:
+        sysfs = root / "sys"
+        dev = root / "dev"
+        (sysfs / "bus/acpi/devices/FTE3600:00").mkdir(parents=True)
+        (sysfs / "bus/acpi/devices/FTE3600:00/status").write_text("15\n")
+        if glue_status is not None:
             glue = sysfs / "bus/platform/devices/fte3600-glue.1.auto"
             glue.mkdir(parents=True)
             (glue / "fte3600_glue_abi").write_text("2\n")
-            (glue / "fte3600_status").write_text("ready\n")
+            (glue / "fte3600_status").write_text(f"{glue_status}\n")
             (glue / "fte3600_acpi_speed_hz").write_text("1000000\n")
             (glue / "fte3600_cs_control").write_text("1\n")
             (glue / "fte3600_irq_source").write_text("gpio\n")
-            (sysfs / "module/spidev/parameters").mkdir(parents=True)
-            (sysfs / "module/spidev/parameters/bufsiz").write_text("65536\n")
-            dev.mkdir(parents=True)
+        (sysfs / "module/spidev/parameters").mkdir(parents=True)
+        (sysfs / "module/spidev/parameters/bufsiz").write_text("65536\n")
+        dev.mkdir(parents=True)
+        if with_dev_nodes:
             for name in ("fte3600-spi-FTE3600:00", "fte3600-gpio-FTE3600:00", "fte3600-irq-FTE3600:00"):
                 (dev / name).write_text("")
+        return sysfs, dev
+
+    def test_doctor_on_synthetic_sysfs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sysfs, dev = self._make_synthetic_sysfs(root)
 
             checks = run_doctor(
                 backend=FakeBackend(),
@@ -235,6 +270,58 @@ class PowerAndDoctorTests(unittest.TestCase):
             self.assertEqual(by_name["spidev-bufsiz"].status, "ok")
             self.assertEqual(by_name["dev-nodes"].status, "ok")
             self.assertEqual(by_name["fprintd"].status, "ok")
+
+    def test_doctor_dev_nodes_warn_vs_fail_semantics(self) -> None:
+        class FailingBackend(FakeBackend):
+            def get_default_device(self, username: str = "") -> DeviceInfo:
+                raise FprintError("no_such_device", "No fingerprint device available")
+
+        # 1. Local-dev: kernel-glue ok + fprintd ok, but /dev/fte3600-* missing -> warn
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sysfs, dev = self._make_synthetic_sysfs(root, with_dev_nodes=False)
+            checks = run_doctor(
+                backend=FakeBackend(),
+                sysfs_root=sysfs,
+                dev_root=dev,
+                powerdevil_config=root / "missing-powerdevilrc",
+            )
+            by_name = {c.name: c for c in checks}
+            self.assertEqual(by_name["kernel-glue"].status, "ok")
+            self.assertEqual(by_name["fprintd"].status, "ok")
+            self.assertEqual(by_name["dev-nodes"].status, "warn")
+            self.assertIn("sysfs", by_name["dev-nodes"].hint.lower())
+            self.assertIn("udev", by_name["dev-nodes"].hint.lower())
+
+        # 2. kernel-glue NOT ok + fprintd ok, /dev/fte3600-* missing -> fail
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sysfs, dev = self._make_synthetic_sysfs(root, glue_status="error", with_dev_nodes=False)
+            checks = run_doctor(
+                backend=FakeBackend(),
+                sysfs_root=sysfs,
+                dev_root=dev,
+                powerdevil_config=root / "missing-powerdevilrc",
+            )
+            by_name = {c.name: c for c in checks}
+            self.assertEqual(by_name["kernel-glue"].status, "fail")
+            self.assertEqual(by_name["fprintd"].status, "ok")
+            self.assertEqual(by_name["dev-nodes"].status, "fail")
+
+        # 3. kernel-glue ok + fprintd NOT ok, /dev/fte3600-* missing -> fail
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sysfs, dev = self._make_synthetic_sysfs(root, glue_status="ready", with_dev_nodes=False)
+            checks = run_doctor(
+                backend=FailingBackend(),
+                sysfs_root=sysfs,
+                dev_root=dev,
+                powerdevil_config=root / "missing-powerdevilrc",
+            )
+            by_name = {c.name: c for c in checks}
+            self.assertEqual(by_name["kernel-glue"].status, "ok")
+            self.assertEqual(by_name["fprintd"].status, "fail")
+            self.assertEqual(by_name["dev-nodes"].status, "fail")
 
 
 class SessionStateMachineTests(unittest.TestCase):

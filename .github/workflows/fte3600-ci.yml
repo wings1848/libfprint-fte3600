@@ -55,3 +55,70 @@ jobs:
         run: |
           python3 -W error::ResourceWarning -m unittest discover -s toolkit/tests -p 'test_core_unit.py' -v
           dbus-run-session -- python3 -W error::ResourceWarning -m unittest toolkit/tests/test_dbus_e2e.py -v
+
+  arch-package:
+    name: Arch Linux makepkg build, tests, and package layout
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+      options: --user root
+    steps:
+      - name: Install build, check, and runtime dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git sudo glib2 libgudev libgusb openssl pixman dkms \
+            python python-gobject cairo glib2-devel gobject-introspection \
+            meson ninja python-build python-installer python-setuptools \
+            umockdev dbus desktop-file-utils
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Verify .SRCINFO and build package with makepkg
+        run: |
+          set -euo pipefail
+          useradd -m -s /bin/bash builder
+          mkdir -p /etc/makepkg.d
+          printf '[safe]\n\tdirectory = *\n' >> /etc/makepkg.d/gitconfig
+
+          su - builder -c "cd '$GITHUB_WORKSPACE/packaging/arch' && makepkg --printsrcinfo" > /tmp/generated.SRCINFO
+          diff -u "$GITHUB_WORKSPACE/packaging/arch/.SRCINFO" /tmp/generated.SRCINFO
+
+          rm -rf /tmp/arch-pkg
+          cp -a "$GITHUB_WORKSPACE/packaging/arch" /tmp/arch-pkg
+          head_sha=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)
+          python3 - "$GITHUB_WORKSPACE" "$head_sha" <<'PY'
+          import pathlib, re, sys
+          workspace, head_sha = sys.argv[1], sys.argv[2]
+          pkgbuild = pathlib.Path("/tmp/arch-pkg/PKGBUILD")
+          text = pkgbuild.read_text(encoding="utf-8")
+          new_text, count = re.subn(
+              r'^source=\(.*\)$',
+              f'source=("libfprint::git+file://{workspace}#commit={head_sha}")',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              raise SystemExit(f"Expected 1 source=() line in PKGBUILD, replaced {count}")
+          pkgbuild.write_text(new_text, encoding="utf-8")
+          PY
+          chown -R builder:builder /tmp/arch-pkg
+
+          su - builder -c 'cd /tmp/arch-pkg && makepkg --noconfirm'
+
+          pkg_file=$(find /tmp/arch-pkg -maxdepth 1 -name 'libfprint-fte3600-git-*.pkg.tar.zst' ! -name '*-debug-*' | head -n 1)
+          test -n "$pkg_file"
+          bsdtar -tf "$pkg_file" > /tmp/pkg-files.txt
+          for required in \
+            'usr/lib/libfprint-2.so' \
+            'usr/bin/fte3600-toolkit' \
+            'usr/bin/fte3600-toolkit-gui' \
+            'usr/bin/fte3600-tool' \
+            'usr/share/applications/org.freedesktop.libfprint.Fte3600Toolkit.desktop' \
+            'usr/src/fte3600-0.2/dkms.conf'; do
+            grep -qx "$required" /tmp/pkg-files.txt || {
+              echo "Missing expected package file: $required" >&2
+              cat /tmp/pkg-files.txt >&2
+              exit 1
+            }
+          done

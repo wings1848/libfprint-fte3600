@@ -68,6 +68,7 @@ def run_doctor(
     # 2. Kernel glue ABI 2
     plat_dir = sysfs / "bus" / "platform" / "devices"
     glue_nodes = sorted(plat_dir.glob("fte3600-glue.*")) if plat_dir.is_dir() else []
+    kernel_glue_ok = False
     if not glue_nodes:
         results.append(
             CheckResult(
@@ -84,16 +85,16 @@ def run_doctor(
         speed = _read_text(g / "fte3600_acpi_speed_hz")
         irq_src = _read_text(g / "fte3600_irq_source")
         cs_ctrl = _read_text(g / "fte3600_cs_control")
-        ok = abi == "2" and status == "ready"
+        kernel_glue_ok = abi == "2" and status == "ready"
         results.append(
             CheckResult(
                 name="kernel-glue",
-                status="ok" if ok else "fail",
+                status="ok" if kernel_glue_ok else "fail",
                 detail=(
                     f"{g.name}: abi={abi}, status={status}, "
                     f"speed_hz={speed}, cs_control={cs_ctrl}, irq={irq_src}"
                 ),
-                hint="" if ok else "Expected glue ABI 2 and status=ready; reboot after DKMS update.",
+                hint="" if kernel_glue_ok else "Expected glue ABI 2 and status=ready; reboot after DKMS update.",
             )
         )
 
@@ -123,61 +124,64 @@ def run_doctor(
             )
         )
 
-    # 4. /dev/fte3600-* paired symlinks
+    # 4 & 5. Probe fprintd first so dev-nodes can distinguish local-dev sysfs fallback from failures.
+    if backend is not None:
+        try:
+            info = backend.get_default_device(username)
+            fprintd_result = CheckResult(
+                name="fprintd",
+                status="ok",
+                detail=(
+                    f"{info.name} (scan={info.scan_type}, "
+                    f"enroll_stages={info.num_enroll_stages}, "
+                    f"enrolled={len(info.enrolled_fingers)})"
+                ),
+            )
+        except FprintError as exc:
+            fprintd_result = CheckResult(
+                name="fprintd",
+                status="fail",
+                detail=f"{exc.code}: {exc.message}",
+                hint="Ensure fprintd is installed and running (`systemctl status fprintd`).",
+            )
+    else:
+        fprintd_result = CheckResult(
+            name="fprintd",
+            status="skip",
+            detail="Skipped D-Bus probe",
+        )
+
+    # /dev/fte3600-* paired symlinks
     dev_links = sorted(p.name for p in dev.glob("fte3600-*")) if dev.is_dir() else []
     has_spi = any(name.startswith("fte3600-spi-") for name in dev_links)
     has_gpio = any(name.startswith("fte3600-gpio-") for name in dev_links)
     has_irq = any(name.startswith("fte3600-irq-") for name in dev_links)
     if has_spi and has_gpio and has_irq:
-        results.append(
-            CheckResult(
-                name="dev-nodes",
-                status="ok",
-                detail=", ".join(dev_links),
-            )
+        dev_nodes_result = CheckResult(
+            name="dev-nodes",
+            status="ok",
+            detail=", ".join(dev_links),
+        )
+    elif kernel_glue_ok and fprintd_result.status == "ok":
+        dev_nodes_result = CheckResult(
+            name="dev-nodes",
+            status="warn",
+            detail=f"Found: {', '.join(dev_links) or 'none'} (live sysfs discovery active)",
+            hint=(
+                "Missing /dev/fte3600-* udev symlinks; live sysfs discovery still works for local-dev testing. "
+                "Install the package or udev rules (70-fte3600-acpi-spidev.rules) to restore /dev/fte3600-* links."
+            ),
         )
     else:
-        results.append(
-            CheckResult(
-                name="dev-nodes",
-                status="fail" if acpi_nodes else "skip",
-                detail=f"Found: {', '.join(dev_links) or 'none'}",
-                hint="Expected spi, gpio, and irq symlinks under /dev/fte3600-*. Run `sudo ./scripts/setup-fte3600.sh check`.",
-            )
+        dev_nodes_result = CheckResult(
+            name="dev-nodes",
+            status="fail" if acpi_nodes else "skip",
+            detail=f"Found: {', '.join(dev_links) or 'none'}",
+            hint="Expected spi, gpio, and irq symlinks under /dev/fte3600-*. Run `sudo ./scripts/setup-fte3600.sh check`.",
         )
 
-    # 5. fprintd D-Bus availability
-    if backend is not None:
-        try:
-            info = backend.get_default_device(username)
-            results.append(
-                CheckResult(
-                    name="fprintd",
-                    status="ok",
-                    detail=(
-                        f"{info.name} (scan={info.scan_type}, "
-                        f"enroll_stages={info.num_enroll_stages}, "
-                        f"enrolled={len(info.enrolled_fingers)})"
-                    ),
-                )
-            )
-        except FprintError as exc:
-            results.append(
-                CheckResult(
-                    name="fprintd",
-                    status="fail",
-                    detail=f"{exc.code}: {exc.message}",
-                    hint="Ensure fprintd is installed and running (`systemctl status fprintd`).",
-                )
-            )
-    else:
-        results.append(
-            CheckResult(
-                name="fprintd",
-                status="skip",
-                detail="Skipped D-Bus probe",
-            )
-        )
+    results.append(dev_nodes_result)
+    results.append(fprintd_result)
 
     # 6. KDE PowerDevil shared power-button advisory (GPD Pocket 3 ergonomics)
     pd = inspect_powerdevil_config(powerdevil_config)

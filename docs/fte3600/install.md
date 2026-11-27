@@ -15,7 +15,8 @@ package the library and kernel module in derivations, and configure firmware
 and fprintd permissions declaratively. The installation commands below target
 conventional distributions.
 
-For Arch and NixOS, use the [distribution configurations](../../packaging/README.md).
+For Arch Linux (`paru -S libfprint-fte3600-git`) and NixOS, use the
+[distribution configurations](../../packaging/README.md).
 
 ## Build
 
