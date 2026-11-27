@@ -20,22 +20,26 @@ FINGER="right-index-finger"
 ROUNDS=5
 SKIP_ENROLL=0
 GUI_MODE=0
+SSH_MODE="auto"
 REBUILD=0
 UNINSTALL_OLD=0
 LANG_OPT="auto"
 KEEP_LOG=0
+TARGET_USER="$(id -un)"
 
 usage() {
   cat <<'EOF'
 Usage: ./scripts/e2e-local-fte3600.sh [options]
 
-Pure-local E2E test for the built FTE3600 driver + unprivileged toolkit (no install).
+Pure-local E2E test for the built FTE3600 driver + toolkit (no system install).
 
 Options:
   --finger <name>   Finger slot to enroll & verify (default: right-index-finger)
   --rounds <N>      Number of verification rounds (default: 5)
   --skip-enroll     Skip enrollment and run verification only
   --gui             Launch GTK4/libadwaita GUI against the temporary local fprintd
+  --ssh             Force SSH/terminal authorization via sudo --user <you> (auto-detected over SSH)
+  --no-ssh          Force unprivileged client (desktop Polkit agent / local active TTY)
   --rebuild         Recompile build-local/ before starting
   --uninstall-old   Replace installed libfprint-fte3600-personal-git with stock libfprint first
   --lang <mode>     UI language: auto | en | zh (default: auto)
@@ -50,6 +54,8 @@ while [ "$#" -gt 0 ]; do
     --rounds) ROUNDS="${2:?missing value for --rounds}"; shift 2 ;;
     --skip-enroll) SKIP_ENROLL=1; shift ;;
     --gui) GUI_MODE=1; shift ;;
+    --ssh) SSH_MODE="yes"; shift ;;
+    --no-ssh) SSH_MODE="no"; shift ;;
     --rebuild) REBUILD=1; shift ;;
     --uninstall-old) UNINSTALL_OLD=1; shift ;;
     --lang) LANG_OPT="${2:?missing value for --lang}"; shift 2 ;;
@@ -58,6 +64,15 @@ while [ "$#" -gt 0 ]; do
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+USE_SUDO_CLIENT=0
+if [ "$GUI_MODE" -eq 0 ]; then
+  if [ "$SSH_MODE" = "yes" ]; then
+    USE_SUDO_CLIENT=1
+  elif [ "$SSH_MODE" = "auto" ] && [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ]; then
+    USE_SUDO_CLIENT=1
+  fi
+fi
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "error: do not run this script with sudo; run as your normal user." >&2
@@ -129,8 +144,8 @@ chmod 700 "$TMP_DIR"
 FPRINTD_LOG="$TMP_DIR/fprintd.log"
 STATE_FILE="$TMP_DIR/rounds.jsonl"
 PID_FILE="$TMP_DIR/fprintd.pid"
-touch "$FPRINTD_LOG" "$PID_FILE"
-chmod 600 "$FPRINTD_LOG" "$PID_FILE"
+touch "$FPRINTD_LOG" "$PID_FILE" "$STATE_FILE"
+chmod 600 "$FPRINTD_LOG" "$PID_FILE" "$STATE_FILE"
 FPRINTD_PID=""
 WAS_ACTIVE=0
 
@@ -209,10 +224,23 @@ if [ "$READY" -ne 1 ]; then
   exit 1
 fi
 
+run_toolkit() {
+  if [ "$USE_SUDO_CLIENT" -eq 1 ]; then
+    sudo env PYTHONPATH="$REPO_DIR/toolkit/src" LANG="${LANG:-}" LC_ALL="${LC_ALL:-}" \
+      python3 -m fte3600_toolkit --user "$TARGET_USER" --no-sound --no-notify "$@"
+  else
+    PYTHONPATH="$REPO_DIR/toolkit/src" python3 -m fte3600_toolkit "$@"
+  fi
+}
+
 echo ""
 echo "=== [1/4] Diagnostics & Device Status ==="
+if [ "$USE_SUDO_CLIENT" -eq 1 ]; then
+  echo "==> SSH terminal mode: Polkit denies remote non-root enroll/verify (allow_any=no);"
+  echo "    running fprintd client via sudo targeting --user $TARGET_USER."
+fi
 PYTHONPATH="$REPO_DIR/toolkit/src" python3 -m fte3600_toolkit doctor --lang "$LANG_OPT" || true
-PYTHONPATH="$REPO_DIR/toolkit/src" python3 -m fte3600_toolkit status --lang "$LANG_OPT"
+run_toolkit status --lang "$LANG_OPT"
 
 if [ "$GUI_MODE" -eq 1 ]; then
   echo ""
@@ -223,8 +251,7 @@ else
   if [ "$SKIP_ENROLL" -eq 0 ]; then
     echo ""
     echo "=== [2/4] Interactive Enrollment ($FINGER) ==="
-    PYTHONPATH="$REPO_DIR/toolkit/src" python3 -m fte3600_toolkit enroll \
-      --finger "$FINGER" --state-file "$STATE_FILE" --lang "$LANG_OPT"
+    run_toolkit enroll --finger "$FINGER" --state-file "$STATE_FILE" --lang "$LANG_OPT"
   else
     echo ""
     echo "=== [2/4] Enrollment skipped (--skip-enroll) ==="
@@ -232,8 +259,7 @@ else
 
   echo ""
   echo "=== [3/4] Interactive Timed Verification ($ROUNDS rounds, finger=$FINGER) ==="
-  PYTHONPATH="$REPO_DIR/toolkit/src" python3 -m fte3600_toolkit verify \
-    --finger "$FINGER" --rounds "$ROUNDS" --state-file "$STATE_FILE" --lang "$LANG_OPT" || true
+  run_toolkit verify --finger "$FINGER" --rounds "$ROUNDS" --state-file "$STATE_FILE" --lang "$LANG_OPT" || true
 fi
 
 echo ""
