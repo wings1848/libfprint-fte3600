@@ -247,6 +247,12 @@ fte3600_linux_runtime_wait_release (struct fte3600_linux_runtime *runtime,
   trace (runtime->control, "release-ok");
   return failure (diag, FTE3600_RUNTIME_OK);
 }
+int
+fte3600_linux_runtime_used_alternate_cs (const struct fte3600_linux_runtime *runtime)
+{
+  (void) runtime;
+  return 0;
+}
 void
 fte3600_linux_runtime_frame_clear (struct fte3600_linux_runtime_frame *frame)
 {

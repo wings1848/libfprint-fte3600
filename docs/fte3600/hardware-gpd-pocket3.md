@@ -27,11 +27,16 @@ Earlier community reports for Core i7 variants of the GPD Pocket 3 describe a di
 
 On the GPD Pocket 3, the fingerprint pad is physically integrated into the power button. Pressing firmly enough for a full-pad capture emits `KEY_POWER`.
 
-- **During enrollment and recognition testing**: `fte3600-toolkit` automatically requests an unprivileged `systemd-logind` `handle-power-key` inhibitor lock (no `sudo` needed).
-- **In daily desktop use (KDE Plasma / PowerDevil)**: If firm presses open the shutdown menu, set **System Settings → Power Management → Power Button Action → Do nothing** (long-press hardware power-off remains unaffected). `fte3600-toolkit doctor` checks your PowerDevil profile read-only and reports if any profile still has a non-zero power-button action.
+- **Recommended — Automatic coexistence (`fte3600-power-guard.service`)**: Enable the included lightweight D-Bus + `evdev` guard daemon:
+  ```bash
+  sudo systemctl enable --now fte3600-power-guard.service
+  ```
+  - **When idle**: Releases `EVIOCGRAB` completely, so normal short-press power-button suspend/shutdown works as configured in your desktop environment.
+  - **During lock screen or active `fprintd` sessions (+ 2.0 s release grace window)**: Temporarily grabs the ACPI power-button nodes (`/dev/input/event1`, `/dev/input/event3`) to suppress short presses (`< 1.8 s`), while holding for `1.8–4.5 s` still triggers a graceful `systemd-logind` shutdown (or `--long-press-action=suspend`) well before the motherboard EC 5-second hard cut-off.
+- **Alternative (desktop setting only)**: Set **System Settings → Power Management → Power Button Action → Do nothing** (long-press hardware power-off remains unaffected). `fte3600-toolkit` also requests an unprivileged `systemd-logind` `handle-power-key` inhibitor during enrollment/verification, and `fte3600-toolkit doctor` reports your PowerDevil profile status read-only.
 
 ## Practical Capture Tips
 
-- Wait until the prompt announces readiness (~4 s wake-up during `Claim`); presses during wake-up are dropped by the sensor.
-- Press **firmly** to cover the whole 64×80 pad and hold for ~1 s. Light edge taps fail frequently until M3 threshold calibration is completed.
+- With fast-open dual-polarity word-ID pre-probing and warm DAC hints, sensor wake-up typically takes **~0.5–0.8 s** instead of ~4.2 s.
+- Press **firmly** to cover the whole 64×80 pad and hold briefly (~0.5–1 s).
 - Always retain password fallback in PAM (`pam_fprintd.so` as `sufficient`, never `required`).

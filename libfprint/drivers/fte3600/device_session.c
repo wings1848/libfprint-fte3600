@@ -285,7 +285,8 @@ fte3600_device_create (
 {
   if (!config || !output || !config->io.spi || !config->io.wait_ms || !config->io.wait_us ||
       !config->io.gpio || !config->io.boundary || !config->io.clock_ms ||
-      !config->io.error || !config->io.clear_error || config->prefer_running_application > 1 || config->startup.scene != 0 ||
+      !config->io.error || !config->io.clear_error || config->prefer_running_application > 1 ||
+      config->fw9369_image_dac_hint > 126 || config->startup.scene != 0 ||
       config->startup.initial_model != FTE3600_MODEL_UNKNOWN || config->startup.resume_cleanup ||
       ((config->startup.firmware || config->startup.firmware_length) && !legacy_sensor (config->legacy_firmware_model)))
     return FTE3600_DEVICE_INVALID_ARGUMENT;
@@ -457,6 +458,45 @@ running_application (struct fte3600_device_session *s)
 }
 
 enum fte3600_device_error
+fte3600_device_start_running (struct fte3600_device_session *s)
+{
+  if (!s)
+    return FTE3600_DEVICE_INVALID_ARGUMENT;
+  if (s->active || s->status.state == FTE3600_DEVICE_ARMED)
+    return FTE3600_DEVICE_BUSY;
+  if (s->status.state != FTE3600_DEVICE_CREATED)
+    return FTE3600_DEVICE_NOT_READY;
+  begin (s);
+  s->status.image_available = 0;
+  s->status.startup_complete = 0;
+  s->status.calibration_complete = 0;
+  s->status.raw_id = s->status.chip_id = s->status.width = s->status.height = s->status.extra_rows = 0;
+  s->status.baseline_crc = 0;
+  s->status.calibrated_image_dac = 0;
+  s->fw_maintenance_pending = s->fw_down_armed = 0;
+  s->fw_release_rejections = 0;
+  (void) fte3600_factory_integration_state_defaults (&s->factory);
+  memset (&s->startup_result, 0, sizeof s->startup_result);
+  enum fte3600_device_error error = running_application (s);
+  if (error == FTE3600_DEVICE_NOT_READY)
+    {
+      enum fte3600_device_error result = finish (s, error, 0);
+      if (result == FTE3600_DEVICE_NOT_READY)
+        s->status.state = FTE3600_DEVICE_CREATED;
+      return result;
+    }
+  if (!error)
+    s->status.state = FTE3600_DEVICE_IDLE;
+  enum fte3600_device_error result = finish (s, error, error != FTE3600_DEVICE_OK);
+  if (result)
+    {
+      s->status.startup_complete = 0;
+      s->status.calibration_complete = 0;
+    }
+  return result;
+}
+
+enum fte3600_device_error
 fte3600_device_start (struct fte3600_device_session *s)
 {
   if (!s)
@@ -474,6 +514,7 @@ fte3600_device_start (struct fte3600_device_session *s)
   s->fw_release_rejections = 0;
   /* Recovery starts a real cold initialization; stale flags cannot qualify. */
   (void) fte3600_factory_integration_state_defaults (&s->factory);
+  s->factory.word.fw.image_dac_hint = s->config.fw9369_image_dac_hint;
   memset (&s->startup_result, 0, sizeof s->startup_result);
   enum fte3600_device_error error;
   if (s->config.prefer_running_application && s->status.state == FTE3600_DEVICE_CREATED)

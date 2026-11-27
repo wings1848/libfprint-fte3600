@@ -19,6 +19,8 @@ struct fte3600_fw9369_startup_state
   uint8_t                          image_count, shift;
   uint16_t                         fdt_reference[8], fdt_down[8], fdt_up[8];
   uint16_t                         baseline[FTE3600_IMAGE_PIXELS], work_image[FTE3600_IMAGE_PIXELS];
+  /* Optional warm starting DAC hint for Linux startup (1..126; 0 = default 54). */
+  uint8_t                          image_dac_hint;
 };
 #define FTE3600_FW9369_STARTUP_STATE_INITIALIZER \
   { \

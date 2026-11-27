@@ -54,6 +54,9 @@ struct fte3600_device_config
    * fresh ready/geometry/version replies before trying the cold scanner.
    * Firmware remains mandatory and is supplied by the verified loader. */
   unsigned prefer_running_application;
+  /* Optional warm starting DAC hint for FW9369 image search (1..126; 0 = default 54).
+   * Live search and baseline calibration still execute on every startup. */
+  uint8_t fw9369_image_dac_hint;
 };
 enum fte3600_device_error {
   FTE3600_DEVICE_OK,
@@ -109,6 +112,10 @@ struct fte3600_device_session;
  * image. Selection alone never establishes startup_complete. */
 enum fte3600_device_error fte3600_device_create (const struct fte3600_device_config *,
                                                  struct fte3600_device_session **);
+/* Try qualifying an already-running legacy application on a CREATED session
+ * without falling through to cold discovery. On NOT_READY the session stays
+ * CREATED so the caller can perform polarity checks before cold start. */
+enum fte3600_device_error fte3600_device_start_running (struct fte3600_device_session *);
 enum fte3600_device_error fte3600_device_start (struct fte3600_device_session *);
 /* arm prepares one request. IRQ is supplied by the serialized caller after
  * its platform wait; capture is an immediate attempt for bring-up. Both call

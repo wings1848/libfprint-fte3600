@@ -71,6 +71,8 @@ Reboot so DKMS loads the `fte3600` module and `spidev` applies `bufsiz=65536`, t
 ```sh
 sudo fte3600-device-allow --install
 sudo systemctl restart fprintd.service
+# Optional (combo power-button readers such as GPD Pocket 3): enable power-button coexistence guard
+sudo systemctl enable --now fte3600-power-guard.service
 fte3600-toolkit doctor
 ```
 

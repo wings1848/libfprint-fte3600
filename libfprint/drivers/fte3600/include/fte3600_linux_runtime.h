@@ -43,9 +43,14 @@ struct fte3600_linux_runtime_config
   /* Exact absolute spidev path supplied by libfprint; no hidraw/USB route.
    * Test roots default to /sys and /dev; all normal board checks still run. */
   const char *spidev_path, *sys_root, *dev_root, *firmware_dir;
-  /* Opt in to waking and freshly qualifying an FT9338/FT9348/FT9361/FT9536 application.
+  /* Opt in to waking and freshly qualifying an FT9338/FT9348/FT9361/FT9536 application,
+   * and fast dual-polarity word-ID pre-probing when native CS control is available.
    * Unknown or mismatched replies retain the complete cold path. */
   unsigned fast_open;
+  /* Try the opposite SPI CS polarity first when native CS control is advertised. */
+  unsigned prefer_alternate_cs;
+  /* Optional FW9369 warm starting DAC hint (1..126; 0 = default 54). */
+  uint8_t fw9369_image_dac_hint;
 };
 struct fte3600_linux_runtime_frame
 {
@@ -103,6 +108,8 @@ enum fte3600_linux_runtime_error fte3600_linux_runtime_wait_release (struct fte3
                                                                      struct fte3600_linux_runtime_diagnostic *);
 enum fte3600_linux_runtime_error fte3600_linux_runtime_get_status (const struct fte3600_linux_runtime *,
                                                                    struct fte3600_device_status *);
+/* Non-zero if the open runtime is currently using the opposite SPI CS polarity. */
+int fte3600_linux_runtime_used_alternate_cs (const struct fte3600_linux_runtime *);
 void fte3600_linux_runtime_frame_clear (struct fte3600_linux_runtime_frame *);
 /* Always frees, including on close failure. NULL is allowed. */
 enum fte3600_linux_runtime_error fte3600_linux_runtime_close (struct fte3600_linux_runtime *,

@@ -71,6 +71,8 @@ paru -S gtk4 libadwaita
 ```sh
 sudo fte3600-device-allow --install
 sudo systemctl restart fprintd.service
+# 可选（电源键复用指纹的机型，如 GPD Pocket 3）：启用电源键共存守护进程
+sudo systemctl enable --now fte3600-power-guard.service
 fte3600-toolkit doctor
 ```
 

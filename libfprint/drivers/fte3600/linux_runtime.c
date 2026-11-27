@@ -26,6 +26,9 @@ struct fte3600_linux_runtime
   int                            timed_out;
   int                            needs_reopen;
   int                            cs_retried;
+  unsigned                       fast_open;
+  unsigned                       prefer_alternate_cs;
+  int                            using_alternate_cs;
   unsigned                       recoveries;
 };
 static enum fte3600_linux_runtime_error
@@ -243,6 +246,53 @@ session_error (struct fte3600_linux_runtime *r,
     return result (d, FTE3600_RUNTIME_IO, error, e);
   return result (d, e == FTE3600_DEVICE_NO_MEMORY ? FTE3600_RUNTIME_NO_MEMORY : FTE3600_RUNTIME_SESSION, 0, e);
 }
+static int
+quick_word_transfer (struct fte3600_linux_runtime *r, uint8_t *bytes, size_t count)
+{
+  if (cancelled (r))
+    return -1;
+  uint32_t status = r->device.io.spi (r->device.io.context, bytes, count);
+  if ((status >> 31) || r->device.io.error (r->device.io.context) || cancelled (r))
+    return -1;
+  return 0;
+}
+/* Lightweight single-shot word-ID probe (~6 ms) used only during fast_open
+ * when native CS control is advertised. Returns 1 on a recognized word-family
+ * chip ID, 0 on an unrecognized/silent reply, or -1 on transport error/cancel. */
+static int
+quick_word_id (struct fte3600_linux_runtime *r)
+{
+  uint8_t cmd1[3] = {0x5a, 0xa5, 0};
+  uint8_t status_rd[5] = {8, 0xf7, 0x80, 0, 0};
+  uint8_t cmd2[3] = {0xa5, 0x5a, 0};
+  uint8_t neg_wr[4] = {9, 0xf6, 0xc6, 1};
+  uint8_t neg_rd[5] = {8, 0xf7, 0xc6, 0, 0};
+  uint8_t id_rd[12] = {4, 0xfb, 0x9a, 0x8b, 0, 1};
+
+  if (quick_word_transfer (r, cmd1, sizeof (cmd1)) < 0)
+    return -1;
+  r->device.io.wait_ms (r->device.io.context, 1);
+  if (quick_word_transfer (r, status_rd, sizeof (status_rd)) < 0)
+    return -1;
+  if (status_rd[4] != 0x50)
+    {
+      uint8_t wake_cmd[3] = {0xc0, 0x3f, 0};
+      if (quick_word_transfer (r, wake_cmd, sizeof (wake_cmd)) < 0)
+        return -1;
+      r->device.io.wait_ms (r->device.io.context, 1);
+    }
+  if (quick_word_transfer (r, cmd2, sizeof (cmd2)) < 0)
+    return -1;
+  if (quick_word_transfer (r, neg_wr, sizeof (neg_wr)) < 0)
+    return -1;
+  r->device.io.wait_ms (r->device.io.context, 4);
+  if (quick_word_transfer (r, neg_rd, sizeof (neg_rd)) < 0)
+    return -1;
+  if (quick_word_transfer (r, id_rd, sizeof (id_rd)) < 0)
+    return -1;
+  uint16_t id = (uint16_t) ((uint16_t) id_rd[6] << 8 | id_rd[7]);
+  return id == 0x9362 || id == 0x9365 || id == 0x9391 || id == 0x9392;
+}
 enum fte3600_linux_runtime_error
 fte3600_linux_runtime_start (struct fte3600_linux_runtime *r,
                              GCancellable *cancel, struct fte3600_linux_runtime_diagnostic *d)
@@ -250,6 +300,8 @@ fte3600_linux_runtime_start (struct fte3600_linux_runtime *r,
   enum fte3600_device_error e;
   enum fte3600_linux_runtime_error rc;
   struct fte3600_device_status s;
+  struct fte3600_linux_board_info info = {0};
+  int have_info = 0;
 
   diagnostic_clear (d);
   if(!r || !r->board)
@@ -262,33 +314,98 @@ fte3600_linux_runtime_start (struct fte3600_linux_runtime *r,
       rc = session_error (r, FTE3600_DEVICE_CANCELLED, d);
       goto done;
     }
+  have_info = !fte3600_linux_board_get_info (r->board, &info);
+  if (r->prefer_alternate_cs && !r->using_alternate_cs && have_info && info.cs_control)
+    {
+      if (fte3600_linux_board_set_cs (r->board, !(info.acpi_mode & SPI_CS_HIGH)))
+        {
+          rc = session_error (r, FTE3600_DEVICE_PLATFORM_ERROR, d);
+          goto done;
+        }
+      r->using_alternate_cs = 1;
+    }
   if(!r->session)
     e = fte3600_device_create (&r->device, &r->session);
   else
     e = FTE3600_DEVICE_OK;
-  if(!e)
+  if (!e && r->fast_open && !r->cs_retried && have_info && info.cs_control)
+    {
+      /* Qualify a running legacy application first (preserves legacy fast_open
+       * behavior verbatim). If not a running legacy app, run a ~6 ms word-ID
+       * polarity check before burning 4 cold rounds on a dead CS polarity. */
+      e = fte3600_device_start_running (r->session);
+      if (e == FTE3600_DEVICE_NOT_READY)
+        {
+          if (!r->prefer_alternate_cs)
+            {
+              int hit = quick_word_id (r);
+              if (hit < 0)
+                {
+                  e = FTE3600_DEVICE_PLATFORM_ERROR;
+                  goto after_start;
+                }
+              if (!hit)
+                {
+                  if (fte3600_linux_board_set_cs (r->board, !(info.acpi_mode & SPI_CS_HIGH)))
+                    {
+                      rc = session_error (r, FTE3600_DEVICE_PLATFORM_ERROR, d);
+                      goto done;
+                    }
+                  hit = quick_word_id (r);
+                  if (hit < 0)
+                    {
+                      e = FTE3600_DEVICE_PLATFORM_ERROR;
+                      goto after_start;
+                    }
+                  if (hit)
+                    {
+                      r->using_alternate_cs = 1;
+                      r->cs_retried = 1;
+                    }
+                  else if (fte3600_linux_board_set_cs (r->board, !!(info.acpi_mode & SPI_CS_HIGH)))
+                    {
+                      rc = session_error (r, FTE3600_DEVICE_PLATFORM_ERROR, d);
+                      goto done;
+                    }
+                }
+            }
+          /* Running-application check already executed on this open; start
+           * cold discovery directly on a fresh session at the chosen polarity. */
+          fte3600_device_close (r->session);
+          r->session = NULL;
+          r->device.prefer_running_application = 0;
+          e = fte3600_device_create (&r->device, &r->session);
+          if (!e)
+            e = fte3600_device_start (r->session);
+        }
+    }
+  else if(!e)
     e = fte3600_device_start (r->session);
+after_start:
   if(e == FTE3600_DEVICE_UNSUPPORTED && !r->cs_retried)
     {
-      struct fte3600_linux_board_info info;
       fte3600_device_get_status (r->session, &s);
       if(s.component_error == FTE3600_FACTORY_INTEGRATION_UNCONFIRMED_IDENTITY &&
          !s.platform_error && !s.failed_spi_calls &&
          !r->device.io.error (r->device.io.context) && !cancelled (r) &&
-         !fte3600_linux_board_get_info (r->board, &info) && info.cs_control)
+         have_info && info.cs_control)
         {
           /* Completed SPI transfers with an unidentified response may be a
            * polarity mismatch. One new cold session at the other permitted
            * polarity; never reuse the failed factory/session state. */
+          int next_cs_high = r->using_alternate_cs ?
+                             !!(info.acpi_mode & SPI_CS_HIGH) :
+                             !(info.acpi_mode & SPI_CS_HIGH);
           r->cs_retried = 1;
           diagnostic_context (r, d);
           fte3600_device_close (r->session);
           r->session = NULL;
-          if(fte3600_linux_board_set_cs (r->board, !(info.acpi_mode & SPI_CS_HIGH)))
+          if(fte3600_linux_board_set_cs (r->board, next_cs_high))
             {
               rc = session_error (r, FTE3600_DEVICE_PLATFORM_ERROR, d);
               goto done;
             }
+          r->using_alternate_cs = !r->using_alternate_cs;
           e = fte3600_device_create (&r->device, &r->session);
           if(!e)
             e = fte3600_device_start (r->session);
@@ -328,7 +445,8 @@ fte3600_linux_runtime_open (
   diagnostic_clear (d);
   if(out)
     *out = NULL;
-  if(!out || !c || c->fast_open > 1)
+  if(!out || !c || c->fast_open > 1 || c->prefer_alternate_cs > 1 ||
+     c->fw9369_image_dac_hint > 126)
     return result (d, FTE3600_RUNTIME_INVALID_ARGUMENT, EINVAL, FTE3600_DEVICE_OK);
   if(cancel && g_cancellable_is_cancelled (cancel))
     return result (d, FTE3600_RUNTIME_CANCELLED, ECANCELED, FTE3600_DEVICE_CANCELLED);
@@ -363,6 +481,9 @@ fte3600_linux_runtime_open (
   end (r);
   r->device.io = *fte3600_linux_board_callbacks (r->board);
   r->device.prefer_running_application = c->fast_open;
+  r->device.fw9369_image_dac_hint = c->fw9369_image_dac_hint;
+  r->fast_open = c->fast_open;
+  r->prefer_alternate_cs = c->prefer_alternate_cs;
   rc = fte3600_linux_runtime_start (r, cancel, d);
   if(rc)
     goto fail;
@@ -722,6 +843,11 @@ fte3600_linux_runtime_get_status (const struct fte3600_linux_runtime *r,
   if(!r || !r->session || !status)
     return FTE3600_RUNTIME_INVALID_ARGUMENT;
   return fte3600_device_get_status (r->session, status) == FTE3600_DEVICE_OK ? FTE3600_RUNTIME_OK : FTE3600_RUNTIME_SESSION;
+}
+int
+fte3600_linux_runtime_used_alternate_cs (const struct fte3600_linux_runtime *r)
+{
+  return r ? r->using_alternate_cs : 0;
 }
 void
 fte3600_linux_runtime_frame_clear (struct fte3600_linux_runtime_frame *frame)

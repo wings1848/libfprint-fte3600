@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 FTE3600 Linux contributors
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+[Unit]
+Description=FTE3600 Combo Power-Button Fingerprint Coexistence Guard
+Documentation=https://github.com/wings1848/libfprint-fte3600/blob/main/docs/fte3600/hardware-gpd-pocket3.md
+After=dbus.service systemd-logind.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/fte3600-power-guard
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+DeviceAllow=char-input r
+
+[Install]
+WantedBy=multi-user.target

@@ -32,6 +32,8 @@ struct _FpiDeviceFte3600
   gboolean                      suspended;
   gboolean                      needs_release;
   gboolean                      cooldown_before_reopen;
+  gboolean                      prefer_alternate_cs;
+  guint8                        last_image_dac;
   guint                         overlap_retries; /* Uninformative touches since the last decisive result. */
   guint                         recovery_retries; /* Consecutive recoverable session losses. */
   GHashTable                   *template_cache; /* Worker-owned; immutable values, exact byte keys. */
@@ -290,8 +292,12 @@ worker (GTask *task, gpointer source, gpointer task_data, GCancellable *cancel)
     goto out;
   if (work->action == FPI_DEVICE_ACTION_OPEN || !self->runtime)
     {
-      struct fte3600_linux_runtime_config config = { .spidev_path = work->resource,
-                                                    .fast_open = work->action == FPI_DEVICE_ACTION_OPEN };
+      struct fte3600_linux_runtime_config config = {
+        .spidev_path = work->resource,
+        .fast_open = work->action == FPI_DEVICE_ACTION_OPEN,
+        .prefer_alternate_cs = self->prefer_alternate_cs ? 1u : 0u,
+        .fw9369_image_dac_hint = self->last_image_dac,
+      };
       struct fte3600_device_status status;
       Fte3600AuthIdentity opened_identity = {0};
 
@@ -340,6 +346,10 @@ worker (GTask *task, gpointer source, gpointer task_data, GCancellable *cancel)
         {
           self->identity = opened_identity;
           self->overlap_retries = 0;
+          self->prefer_alternate_cs = fte3600_linux_runtime_used_alternate_cs (self->runtime) != 0;
+          if (status.model == FTE3600_MODEL_FW9369 &&
+              status.calibrated_image_dac >= 1 && status.calibrated_image_dac <= 126)
+            self->last_image_dac = (guint8) status.calibrated_image_dac;
         }
       if (!error && work->action == FPI_DEVICE_ACTION_OPEN)
         self->recovery_retries = 0;

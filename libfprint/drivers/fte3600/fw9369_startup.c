@@ -380,6 +380,11 @@ prefix (struct startup *op)
   }
   op->s->image_count = 1;
   op->s->shift = 2;
+  if (op->linux_detection && op->s->image_dac_hint >= 1 && op->s->image_dac_hint <= 126)
+    {
+      op->s->image_dac = op->s->image_dac_hint;
+      op->s->image_valid = 1;
+    }
   return FTE3600_FW9369_STARTUP_OK;
 }
 static enum fte3600_fw9369_startup_status

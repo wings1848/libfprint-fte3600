@@ -458,6 +458,65 @@ static void fast_open_firmware_gate(void)
     }
     puts("runtime fast open: four legacy profiles retain verified firmware, stale generation and cancellation gates");
 }
+static int fast_cs_probe_active;
+static uint32_t fast_cs_spi(uint8_t *data,size_t length)
+{
+    if(!cs_responsive()) {
+        ++cs_test.zero_calls;
+        memset(data,0,length);
+        return 0;
+    }
+    if(fast_cs_probe_active) {
+        if(length==5&&data[0]==8&&data[1]==0xf7&&data[2]==0x80) { data[4]=0x50;return 0; }
+        if(length==5&&data[0]==8&&data[1]==0xf7&&data[2]==0xc6) { data[4]=1;return 0; }
+        if(length==12&&data[0]==4&&data[1]==0xfb&&data[2]==0x9a&&data[3]==0x8b) {
+            data[6]=0x93;data[7]=0x62;fast_cs_probe_active=0;return 0;
+        }
+        return 0;
+    }
+    ++cs_test.live_calls;
+    return runtime_spi(data,length);
+}
+static void fast_cs_sleep(uint64_t ns)
+{
+    if(cs_responsive()&&!fast_cs_probe_active) runtime_sleep(ns);
+}
+static void fast_open_cs_and_dac_hints(void)
+{
+    const struct fixture *f=NULL;
+    for(size_t i=0;i<G_N_ELEMENTS(fixtures);++i)
+        if(fixtures[i].model==FTE3600_MODEL_FW9369) { f=&fixtures[i];break; }
+    CHECK(f);unsigned before=fd_count();
+    struct fte3600_linux_runtime_diagnostic d;struct fte3600_linux_runtime *r=NULL;
+    /* 1. Argument bounds for new config fields. */
+    struct fte3600_linux_runtime_config bad=runtime_config();bad.prefer_alternate_cs=2;
+    CHECK(fte3600_linux_runtime_open(&bad,NULL,&r,&d)==FTE3600_RUNTIME_INVALID_ARGUMENT&&!r);
+    bad=runtime_config();bad.fw9369_image_dac_hint=127;
+    CHECK(fte3600_linux_runtime_open(&bad,NULL,&r,&d)==FTE3600_RUNTIME_INVALID_ARGUMENT&&!r);
+    /* 2. prefer_alternate_cs hits opposite CS with zero dead-bus calls. */
+    test_name="prefer_alternate_cs direct hit";cs_setup(f);
+    struct fte3600_linux_runtime_config c=runtime_config();c.prefer_alternate_cs=1;
+    CHECK(!fte3600_linux_runtime_open(&c,NULL,&r,&d)&&r);
+    CHECK(cs_test.zero_calls==0&&fte3600_linux_runtime_used_alternate_cs(r)==1);
+    CHECK(runtime_bus->next==f->count&&!wait_remaining&&fake.mode==SPI_CS_HIGH);
+    CHECK(!fte3600_linux_runtime_close(r,&d)&&fake.mode==0&&fd_count()==before);cs_teardown();
+    /* 3. prefer_alternate_cs falls back to ACPI polarity if chip is at ACPI CS. */
+    test_name="prefer_alternate_cs fallback to ACPI CS";cs_setup(f);cs_test.responsive_mode=0;
+    CHECK(!fte3600_linux_runtime_open(&c,NULL,&r,&d)&&r);
+    CHECK(cs_test.zero_calls>0&&fte3600_linux_runtime_used_alternate_cs(r)==0);
+    CHECK(runtime_bus->next==f->count&&!wait_remaining&&fake.mode==0);
+    CHECK(!fte3600_linux_runtime_close(r,&d)&&fake.mode==0&&fd_count()==before);cs_teardown();
+    /* 4. fast_open cold dual-polarity word pre-probe avoids 4 dead rounds. */
+    test_name="fast_open dual-polarity word pre-probe";cs_setup(f);
+    fast_cs_probe_active=1;bus_spi=fast_cs_spi;bus_sleep=fast_cs_sleep;
+    c=runtime_config();c.fast_open=1;
+    CHECK(!fte3600_linux_runtime_open(&c,NULL,&r,&d)&&r);
+    CHECK(cs_test.zero_calls>0&&cs_test.zero_calls<20);
+    CHECK(fte3600_linux_runtime_used_alternate_cs(r)==1);
+    CHECK(runtime_bus->next==f->count&&!wait_remaining&&fake.mode==SPI_CS_HIGH);
+    CHECK(!fte3600_linux_runtime_close(r,&d)&&fake.mode==0&&fd_count()==before);cs_teardown();
+    puts("runtime fast open: dual-polarity word pre-probe, prefer_alternate_cs and DAC hint bounds passed");
+}
 int main(void)
 {
     CHECK(board_suite_main()==0);reset_fake(1);pairing();verified_firmware();
@@ -469,6 +528,7 @@ int main(void)
             supplied_firmware_case(&fixtures[i]);
     for(size_t i=0;i<G_N_ELEMENTS(fixtures);++i) if(fixtures[i].model==FTE3600_MODEL_FT9365) { threaded_cancel(&fixtures[i]);break; }
     rejected_startups();chip_select_negotiation();legacy_chip_select_negotiation();fast_open_firmware_gate();
+    fast_open_cs_and_dac_hints();
     CHECK(sync_pairs>0);
     printf("runtime: %u release/sync pairs passed syscall-order guard through full startup and lifecycle LOAD\n",sync_pairs);
     puts("runtime: strict pairing, verified firmware, actual startup/capture, timeout, fault/reopen and cross-thread cancellation passed");
