@@ -7,7 +7,8 @@
 [English](README.md) · [简体中文](README-zh.md)
 
 [![CI](https://github.com/wings1848/libfprint-fte3600/actions/workflows/fte3600-ci.yml/badge.svg)](https://github.com/wings1848/libfprint-fte3600/actions/workflows/fte3600-ci.yml)
-[![AUR version](https://img.shields.io/aur/version/libfprint-fte3600-git?label=AUR%20libfprint-fte3600-git)](https://aur.archlinux.org/packages/libfprint-fte3600-git)
+[![AUR bin](https://img.shields.io/aur/version/libfprint-fte3600-bin?label=AUR%20libfprint-fte3600-bin)](https://aur.archlinux.org/packages/libfprint-fte3600-bin)
+[![AUR git](https://img.shields.io/aur/version/libfprint-fte3600-git?label=AUR%20libfprint-fte3600-git)](https://aur.archlinux.org/packages/libfprint-fte3600-git)
 [![License: LGPL-2.1-or-later](https://img.shields.io/badge/host%20%26%20toolkit-LGPL--2.1--or--later-blue.svg)](COPYING)
 [![License: GPL-2.0-only](https://img.shields.io/badge/kernel%20glue-GPL--2.0--only-green.svg)](kernel/fte3600/fte3600.c)
 
@@ -52,10 +53,15 @@ Use `fte3600-tool` (see [hardware tools](docs/fte3600/tools.md)) to identify an 
 
 ### Arch Linux (AUR — Recommended)
 
-Install [`libfprint-fte3600-git`](https://aur.archlinux.org/packages/libfprint-fte3600-git) together with `fprintd` and headers for your running kernel (e.g. `linux-headers` or `linux-lts-headers`). Add `gtk4` and `libadwaita` if you want the desktop GUI:
+Choose the prebuilt [`libfprint-fte3600-bin`](https://aur.archlinux.org/packages/libfprint-fte3600-bin) (built by GitHub Actions — fastest install, recommended for low-power devices) or build from source with [`libfprint-fte3600-git`](https://aur.archlinux.org/packages/libfprint-fte3600-git). Install together with `fprintd` and headers for your running kernel (e.g. `linux-headers` or `linux-lts-headers`). Add `gtk4` and `libadwaita` if you want the desktop GUI:
 
 ```sh
+# Prebuilt binary package (recommended, skips local libfprint compilation):
+paru -S libfprint-fte3600-bin fprintd linux-headers
+
+# Or build latest main from source:
 paru -S libfprint-fte3600-git fprintd linux-headers
+
 # Optional for the desktop GUI:
 paru -S gtk4 libadwaita
 ```
@@ -114,7 +120,7 @@ dbus-run-session -- python3 -W error::ResourceWarning -m unittest toolkit/tests/
 | --- | --- |
 | [docs/README.md](docs/README.md) | Documentation overview and roadmap |
 | [docs/fte3600/install.md](docs/fte3600/install.md) | Source installation, firmware placement, PAM setup, and rollback |
-| [packaging/README.md](packaging/README.md) | Arch Linux AUR (`libfprint-fte3600-git`) and NixOS packaging |
+| [packaging/README.md](packaging/README.md) | Arch Linux AUR (`libfprint-fte3600-bin` / `-git`) and NixOS packaging |
 | [docs/fte3600/hardware-gpd-pocket3.md](docs/fte3600/hardware-gpd-pocket3.md) | GPD Pocket 3 (`G1621-02` / N6000) hardware profile and shared power button |
 | [docs/fte3600/toolkit.md](docs/fte3600/toolkit.md) | `fte3600-toolkit` CLI & GTK4/libadwaita GUI usage and telemetry schema |
 | [docs/fte3600/matcher-benchmark.md](docs/fte3600/matcher-benchmark.md) | Offline Docker multi-algorithm matcher benchmark and real-hardware findings |

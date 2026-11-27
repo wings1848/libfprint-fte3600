@@ -7,7 +7,8 @@
 [English](README.md) · [简体中文](README-zh.md)
 
 [![CI](https://github.com/wings1848/libfprint-fte3600/actions/workflows/fte3600-ci.yml/badge.svg)](https://github.com/wings1848/libfprint-fte3600/actions/workflows/fte3600-ci.yml)
-[![AUR version](https://img.shields.io/aur/version/libfprint-fte3600-git?label=AUR%20libfprint-fte3600-git)](https://aur.archlinux.org/packages/libfprint-fte3600-git)
+[![AUR bin](https://img.shields.io/aur/version/libfprint-fte3600-bin?label=AUR%20libfprint-fte3600-bin)](https://aur.archlinux.org/packages/libfprint-fte3600-bin)
+[![AUR git](https://img.shields.io/aur/version/libfprint-fte3600-git?label=AUR%20libfprint-fte3600-git)](https://aur.archlinux.org/packages/libfprint-fte3600-git)
 [![License: LGPL-2.1-or-later](https://img.shields.io/badge/host%20%26%20toolkit-LGPL--2.1--or--later-blue.svg)](COPYING)
 [![License: GPL-2.0-only](https://img.shields.io/badge/kernel%20glue-GPL--2.0--only-green.svg)](kernel/fte3600/fte3600.c)
 
@@ -52,10 +53,15 @@
 
 ### Arch Linux（AUR 推荐安装）
 
-从 AUR 安装 [`libfprint-fte3600-git`](https://aur.archlinux.org/packages/libfprint-fte3600-git)，并确保已安装 `fprintd` 及当前内核对应的头文件包（如 `linux-headers` 或 `linux-lts-headers`）；如需桌面图形界面，一并安装 `gtk4` 与 `libadwaita`：
+推荐安装由 GitHub Actions 预编译的 [`libfprint-fte3600-bin`](https://aur.archlinux.org/packages/libfprint-fte3600-bin)（跳过本地 `libfprint` 编译，仅在本地通过 DKMS 编译内核胶水模块），或从源码构建 [`libfprint-fte3600-git`](https://aur.archlinux.org/packages/libfprint-fte3600-git)。请一并确保已安装 `fprintd` 及当前内核对应的头文件包（如 `linux-headers` 或 `linux-lts-headers`）；如需桌面图形界面，安装 `gtk4` 与 `libadwaita`：
 
 ```sh
+# 预编译二进制包（推荐，低功耗设备秒装）：
+paru -S libfprint-fte3600-bin fprintd linux-headers
+
+# 或从最新 main 分支源码编译：
 paru -S libfprint-fte3600-git fprintd linux-headers
+
 # 可选：启用桌面图形工具箱
 paru -S gtk4 libadwaita
 ```
@@ -114,7 +120,7 @@ dbus-run-session -- python3 -W error::ResourceWarning -m unittest toolkit/tests/
 | --- | --- |
 | [docs/README.md](docs/README.md) | 文档总览与路线图 |
 | [docs/fte3600/install.md](docs/fte3600/install.md) | 源码编译安装、固件放置、PAM 配置与回滚 |
-| [packaging/README.md](packaging/README.md) | Arch Linux AUR（`libfprint-fte3600-git`）与 NixOS 打包说明 |
+| [packaging/README.md](packaging/README.md) | Arch Linux AUR（`libfprint-fte3600-bin` / `-git`）与 NixOS 打包说明 |
 | [docs/fte3600/hardware-gpd-pocket3.md](docs/fte3600/hardware-gpd-pocket3.md) | GPD Pocket 3（`G1621-02` / N6000）硬件说明与电源键复用配置 |
 | [docs/fte3600/toolkit.md](docs/fte3600/toolkit.md) | `fte3600-toolkit` CLI 与 GTK4/libadwaita GUI 说明与统计格式 |
 | [docs/fte3600/matcher-benchmark.md](docs/fte3600/matcher-benchmark.md) | Docker 多算法离线基准测试与真机实测结论 |

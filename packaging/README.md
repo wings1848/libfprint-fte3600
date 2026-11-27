@@ -3,12 +3,15 @@
 ## Arch Linux
 
 Install `base-devel`, Git, and headers matching your kernel (`linux-headers`,
-`linux-lts-headers`, or the equivalent for your kernel). Then install
-`libfprint-fte3600-git` from the AUR with `paru` (or build directly from this
-repository's `packaging/arch` directory):
+`linux-lts-headers`, or the equivalent for your kernel). Then install the
+prebuilt `libfprint-fte3600-bin` (built by GitHub Actions, fastest install) or
+the source-built `libfprint-fte3600-git` from the AUR with `paru`:
 
 ```sh
-# From AUR:
+# From AUR (prebuilt binary, recommended):
+paru -S libfprint-fte3600-bin fprintd
+
+# Or from AUR (build latest main from source):
 paru -S libfprint-fte3600-git fprintd
 
 # Or directly from a local checkout:

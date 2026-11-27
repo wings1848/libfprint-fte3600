@@ -90,6 +90,12 @@ jobs:
           su - builder -c 'cd /tmp/arch-pkg && makepkg --printsrcinfo' > /tmp/generated.SRCINFO
           diff -u "$GITHUB_WORKSPACE/packaging/arch/.SRCINFO" /tmp/generated.SRCINFO
 
+          rm -rf /tmp/arch-bin-pkg
+          cp -a "$GITHUB_WORKSPACE/packaging/arch-bin" /tmp/arch-bin-pkg
+          chown -R builder:builder /tmp/arch-bin-pkg
+          su - builder -c 'cd /tmp/arch-bin-pkg && makepkg --printsrcinfo' > /tmp/generated-bin.SRCINFO
+          diff -u "$GITHUB_WORKSPACE/packaging/arch-bin/.SRCINFO" /tmp/generated-bin.SRCINFO
+
           head_sha=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)
           python3 - "$GITHUB_WORKSPACE" "$head_sha" <<'PY'
           import pathlib, re, sys
